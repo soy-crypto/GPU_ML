@@ -1,14 +1,12 @@
 #pragma once
-
-#include "tensor.h"
 #include <vector>
+#include "ops.h"
 
-class Layer {
-
+class Graph {
 public:
+    std::vector<Operator*> ops;
 
-    virtual Tensor forward(
-        const Tensor& input
-    ) = 0;
+    void add_op(Operator* op);
 
+    Tensor run(const Tensor& input);
 };

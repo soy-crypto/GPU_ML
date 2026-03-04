@@ -2,15 +2,19 @@
 #include <vector>
 
 class Tensor {
-
 public:
-
     std::vector<float> data;
-    int rows;
-    int cols;
+    std::vector<int> shape;
 
-    Tensor(int r,int c);
+    Tensor() {}
 
-    float& operator()(int r,int c);
+    Tensor(std::vector<int> s) : shape(s) {
+        int total = 1;
+        for (int v : s) total *= v;
+        data.resize(total);
+    }
 
+    int size() const {
+        return data.size();
+    }
 };

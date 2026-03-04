@@ -1,15 +1,17 @@
 #pragma once
 #include "tensor.h"
 
-Tensor linear(
-    const Tensor& input,
-    const Tensor& weight
-);
+class Operator {
+public:
+    virtual Tensor forward(const Tensor& input) = 0;
+};
 
-Tensor relu(
-    const Tensor& input
-);
+class ReLU : public Operator {
+public:
+    Tensor forward(const Tensor& input) override;
+};
 
-Tensor softmax(
-    const Tensor& input
-);
+class Softmax : public Operator {
+public:
+    Tensor forward(const Tensor& input) override;
+};

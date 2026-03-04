@@ -1,31 +1,32 @@
 #include "ops.h"
+#include <algorithm>
 #include <cmath>
 
-Tensor linear(const Tensor& A,const Tensor& B)
-{
-    Tensor C(A.rows,B.cols);
+Tensor ReLU::forward(const Tensor& input) {
 
-    for(int i=0;i<A.rows;i++)
-        for(int j=0;j<B.cols;j++)
-        {
-            float sum=0;
+    Tensor output = input;
 
-            for(int k=0;k<A.cols;k++)
-                sum+=A.data[i*A.cols+k]
-                    *B.data[k*B.cols+j];
+    for (size_t i = 0; i < input.data.size(); i++) {
+        output.data[i] = std::max(0.0f, input.data[i]);
+    }
 
-            C(i,j)=sum;
-        }
-
-    return C;
+    return output;
 }
 
-Tensor relu(const Tensor& A)
-{
-    Tensor B(A.rows,A.cols);
+Tensor Softmax::forward(const Tensor& input) {
 
-    for(int i=0;i<A.rows*A.cols;i++)
-        B.data[i]=std::max(0.0f,A.data[i]);
+    Tensor output = input;
 
-    return B;
+    float sum = 0.0f;
+
+    for (size_t i = 0; i < input.data.size(); i++) {
+        output.data[i] = std::exp(input.data[i]);
+        sum += output.data[i];
+    }
+
+    for (size_t i = 0; i < input.data.size(); i++) {
+        output.data[i] /= sum;
+    }
+
+    return output;
 }
