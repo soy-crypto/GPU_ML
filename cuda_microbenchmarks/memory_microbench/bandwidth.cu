@@ -29,7 +29,7 @@ int main()
 
     cudaEventRecord(start);
 
-    copy_kernel<<<(N+255)/256,256>>>(A,B,N);
+    copy_kernel<<<(N + 255) / 256,256>>>(A, B, N);
 
     cudaEventRecord(stop);
 
@@ -39,12 +39,9 @@ int main()
 
     cudaEventElapsedTime(&ms,start,stop);
 
-    float gb =
-        (float)N*sizeof(float)*2/1e9;
+    float gb = (float)N*sizeof(float)*2/1e9;
 
-    std::cout<<"Bandwidth "
-             <<gb/(ms/1000)
-             <<" GB/s\n";
+    std::cout<<"Bandwidth " <<gb/(ms/1000) <<" GB/s\n";
 
     cudaFree(A);
     cudaFree(B);
