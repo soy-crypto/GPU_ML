@@ -7,30 +7,37 @@
 
 int main() 
 {
-
+    //Init
+    /** Init data */
     Tensor input({1,3});
     input.data = {1.0f, 2.0f, 3.0f};
+    
+    /** Init grap */
     Graph graph;
     ReLU relu;
     Softmax softmax;
 
     graph.add_op(&relu);
     graph.add_op(&softmax);
+
+    //Computation
     auto start = std::chrono::high_resolution_clock::now();
     Tensor output = graph.run(input);
     auto end = std::chrono::high_resolution_clock::now();
 
+    //Update latency
     double latency = std::chrono::duration<double, std::milli>(end - start).count();
-
     std::cout << "Output: ";
     for (float v : output.data) 
     {
         std::cout << v << " ";
     }
-
+    
+    //Output the result of the graph
     std::cout << std::endl;
     std::cout << "Latency: " << latency << " ms\n";
     std::cout << "Inference done\n";
     
+    //Return
     return 0;
 }
