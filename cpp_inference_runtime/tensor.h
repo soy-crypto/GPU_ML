@@ -9,7 +9,6 @@ private:
     int cols;
 
 public:
-    
     Tensor(int r, int c);
     float& operator()(int r,int c);
 };
