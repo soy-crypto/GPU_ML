@@ -3,21 +3,22 @@
 
 class Tensor 
 {
-private:
-    std::vector<float> data;
-    int rows;
-    int cols;
+    private:
+        std::vector<float> data;
+        int rows;
+        int cols;
 
-public:
+    public:
 
-    Tensor(int r, int c);
+        Tensor(int r, int c);
 
-    //Accessors
-    float& operator()(int r, int c);
-    float operator()(int r, int c) const;
+        //Accessors
+        float& operator()(int r, int c);
+        float operator()(int r, int c) const;
 
-    //Data pointers
-    const float* getData() const;
-    int getRows() const;
-    int getCols() const;
+        //Data pointers
+        const float* getData() const;
+        int getRows() const;
+        int getCols() const;
+        
 };
