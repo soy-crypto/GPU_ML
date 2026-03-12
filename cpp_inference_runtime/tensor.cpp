@@ -18,7 +18,7 @@ float Tensor::operator()(int r, int c) const
  //Data pointers
 const float* Tensor::getData() const
 {
-
+    return data;
 }
 
 int Tensor::getRows() const
