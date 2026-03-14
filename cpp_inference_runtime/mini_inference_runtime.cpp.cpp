@@ -15,8 +15,7 @@ class Tensor
         int cols;
 
     public:
-        Tensor(int r, int c)
-            : rows(r), cols(c), data(r * c, 0.0f) {}
+        Tensor(int r, int c): rows(r), cols(c), data(r * c, 0.0f) {}
 
         float& operator()(int r, int c)
         {
@@ -65,10 +64,6 @@ class Operator
         virtual Tensor forward(const Tensor& input) = 0;
 };
 
-////////////////////////////////////////////////////////////
-// ReLU
-////////////////////////////////////////////////////////////
-
 class ReLU : public Operator
 {
     public:
@@ -87,10 +82,6 @@ class ReLU : public Operator
             return output;
         }
 };
-
-////////////////////////////////////////////////////////////
-// Softmax (stable version)
-////////////////////////////////////////////////////////////
 
 class Softmax : public Operator
 {
@@ -162,7 +153,6 @@ int main()
 {
     // Initialize tensor
     Tensor input(1,3);
-
     float* data = input.getData();
 
     for(int i=0;i<input.getSize();i++)
@@ -172,7 +162,6 @@ int main()
 
     // Build computation graph
     Graph graph;
-
     ReLU relu;
     Softmax softmax;
 
@@ -181,28 +170,22 @@ int main()
 
     // Run inference
     auto start = std::chrono::high_resolution_clock::now();
-
     Tensor output = graph.run(input);
-
     auto end = std::chrono::high_resolution_clock::now();
-
-    double latency =
-        std::chrono::duration<double,std::milli>(end-start).count();
 
     // Print output
     std::cout << "Output: ";
-
+    double latency = std::chrono::duration<double,std::milli>(end - start).count();
     float* out = output.getData();
-
     for(int i=0;i<output.getSize();i++)
     {
         std::cout << out[i] << " ";
     }
 
     std::cout << std::endl;
-
     std::cout << "Latency: " << latency << " ms\n";
     std::cout << "Inference done\n";
 
+    //Return
     return 0;
 }
