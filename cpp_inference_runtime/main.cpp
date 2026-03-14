@@ -32,7 +32,7 @@ int main()
     //Update latency
     double latency = std::chrono::duration<double, std::milli>(end - start).count();
     std::cout << "Output: ";
-    float* out = out.getData();
+    float* out = output.getData();
     for (size_t i = 0; i < output.getSize(); i++) 
     {
         std::cout << out[i] << " ";
