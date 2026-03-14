@@ -9,9 +9,12 @@ int main()
 {
     //Init
     /** Init data */
-    Tensor input({1,3});
-    float* data = input.data;
-    data = {1.0f, 2.0f, 3.0f};
+    Tensor input({1, 3});
+    float* data = input.getData();
+    for(size_t i = 0; i < input.getSize(); i++)
+    {
+        data[i] = 1.0 * i;
+    }
     
     /** Init grap */
     Graph graph;

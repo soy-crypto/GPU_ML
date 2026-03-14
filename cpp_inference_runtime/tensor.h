@@ -20,5 +20,5 @@ class Tensor
         const float* getData() const;
         int getRows() const;
         int getCols() const;
-
+        int getSize() const;
 };

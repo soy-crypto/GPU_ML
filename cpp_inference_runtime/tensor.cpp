@@ -18,12 +18,12 @@ float Tensor::operator()(int r, int c) const
 //Data pointers
 const float* Tensor::getData() const
 {
-    return data;
+    return data.data();
 }
 
 float* Tensor::getData()
 {
-    return data;
+    return data.data();
 }
 
 int Tensor::getRows() const
