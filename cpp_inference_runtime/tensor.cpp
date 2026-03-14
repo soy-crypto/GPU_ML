@@ -35,3 +35,8 @@ int Tensor::getCols() const
 {
     return cols;
 }
+
+int Tensor::getSize() const
+{
+    return rows * cols;
+}

@@ -9,11 +9,11 @@ int main()
 {
     //Init
     /** Init data */
-    Tensor input({1, 3});
+    Tensor input(1, 3);
     float* data = input.getData();
     for(size_t i = 0; i < input.getSize(); i++)
     {
-        data[i] = 1.0 * i;
+        data[i] = 1.0f * i;
     }
     
     /** Init grap */
@@ -32,9 +32,10 @@ int main()
     //Update latency
     double latency = std::chrono::duration<double, std::milli>(end - start).count();
     std::cout << "Output: ";
-    for (float v : output.data) 
+    float* out = out.getData();
+    for (size_t i = 0; i < output.getSize(); i++) 
     {
-        std::cout << v << " ";
+        std::cout << out[i] << " ";
     }
     
     //Output the result of the graph

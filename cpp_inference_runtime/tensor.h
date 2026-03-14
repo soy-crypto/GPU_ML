@@ -18,6 +18,7 @@ class Tensor
 
         //Data pointers
         const float* getData() const;
+        float* getData();
         int getRows() const;
         int getCols() const;
         int getSize() const;
