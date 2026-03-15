@@ -76,6 +76,7 @@ for each tile pair (t):
     multiply row of A_tile × column of B_tile
     add to sum
 */
+
 ////////////////////////////////////////////////////////////
 
 __global__ void gemm_tiled_kernel(float* A, float* B, float* C,int N)
@@ -145,8 +146,8 @@ int main()
     cudaMemcpy(d_A, A.data(), N * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_B, B.data(), N * sizeof(float), cudaMemcpyHostToDevice);
 
-    int block = 256;
     int grid = (N + block - 1) / block;
+    int block = 256;
     vector_add_kernel<<<grid,block>>>(d_A, d_B, d_C, N);
     cudaMemcpy(C.data(), d_C, N * sizeof(float), cudaMemcpyDeviceToHost);
     std::cout << "Result example: " << C[0] << std::endl;
@@ -181,8 +182,8 @@ int main()
     cudaMemcpy(g_A, h_A.data(), bytes, cudaMemcpyHostToDevice);
     cudaMemcpy(g_B, h_B.data(), bytes,cudaMemcpyHostToDevice);
 
-    dim3 block2(TILE, TILE);
     dim3 grid2(M/TILE, M/TILE);
+    dim3 block2(TILE, TILE);
     gemm_naive_kernel<<<grid2,block2>>>(g_A, g_B, g_C, M);
     cudaMemcpy(h_C.data(), g_C,bytes, cudaMemcpyDeviceToHost);
 
