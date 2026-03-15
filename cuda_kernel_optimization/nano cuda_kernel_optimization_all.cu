@@ -4,7 +4,7 @@
 #include <cuda_runtime.h>
 
 #define TILE 16
-#define M 256;
+#define M 256
 
 ////////////////////////////////////////////////////////////
 // CPU GEMM
@@ -12,7 +12,7 @@
 
 void cpu_gemm(const float* A, const float* B, float* C, int N)
 {
-    for(int i = 0;i < N; ++)
+    for(int i = 0;i < N; i++)
     {
         for(int j = 0; j < N; j++)
         {
@@ -118,7 +118,11 @@ __global__ void gemm_tiled_kernel(float* A, float* B, float* C,int N)
     }
 
     // Write the final result for this thread's matrix element
-    C[row * N + col] = sum;
+    if(row < N && col < N)
+    {
+        C[row * N + col] = sum;
+    }
+
 }
 
 
