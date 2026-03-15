@@ -61,6 +61,7 @@ class Tensor
 class Operator
 {
     public:
+        virtual ~Operator() {}
         virtual Tensor forward(const Tensor& input) = 0;
 };
 
