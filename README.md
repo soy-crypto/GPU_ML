@@ -1,4 +1,4 @@
-# GPU Systems Engineering Foundations
+# GPU Systems Engineering
 
 This repository contains GPU systems and inference engineering projects.
 
