@@ -68,6 +68,14 @@ __global__ void gemm_naive_kernel(float* A,float* B,float* C,int N)
 
 ////////////////////////////////////////////////////////////
 // CUDA TILED GEMM
+/*
+for each tile pair (t):
+    load A_tile
+    load B_tile
+    synchronize threads
+    multiply row of A_tile × column of B_tile
+    add to sum
+*/
 ////////////////////////////////////////////////////////////
 
 __global__ void gemm_tiled_kernel(float* A, float* B, float* C,int N)
