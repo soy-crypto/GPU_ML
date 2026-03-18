@@ -70,7 +70,7 @@ class ReLU : public Operator
     public:
         Tensor forward(const Tensor& input) override
         {
-            Tensor output(input.getRows(), input.getCols());
+            Tensor output = Tensor(input.getRows(), input.getCols());
 
             const float* inputData = input.getData();
             float* outData = output.getData();
@@ -82,6 +82,7 @@ class ReLU : public Operator
 
             return output;
         }
+
 };
 
 class Softmax : public Operator
@@ -89,20 +90,17 @@ class Softmax : public Operator
     public:
         Tensor forward(const Tensor& input) override
         {
-            Tensor output(input.getRows(), input.getCols());
-
+            Tensor output = Tensor(input.getRows(), input.getCols());
             const float* inputData = input.getData();
             float* outData = output.getData();
 
             float maxVal = inputData[0];
-
             for (int i = 1; i < input.getSize(); i++)
             {
                 maxVal = std::max(maxVal, inputData[i]);
             }
 
             float sum = 0.0f;
-
             for (int i = 0; i < input.getSize(); i++)
             {
                 outData[i] = std::exp(inputData[i] - maxVal);
@@ -114,6 +112,7 @@ class Softmax : public Operator
                 outData[i] /= sum;
             }
 
+            //Return
             return output;
         }
 };
@@ -136,7 +135,6 @@ class Graph
         Tensor run(const Tensor& input)
         {
             Tensor x = input;
-
             for (auto op : ops)
             {
                 x = op->forward(x);
@@ -144,6 +142,7 @@ class Graph
 
             return x;
         }
+
 };
 
 ////////////////////////////////////////////////////////////
@@ -152,10 +151,9 @@ class Graph
 
 int main()
 {
-    // Initialize tensor
-    Tensor input(1,3);
+    // Init input tensor
+    Tensor input = Tensor(1,3);
     float* data = input.getData();
-
     for(int i = 0;i < input.getSize(); i++)
     {
         data[i] = static_cast<float>(i);
