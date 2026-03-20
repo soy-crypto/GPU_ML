@@ -16,7 +16,7 @@ class Tensor
     public:
         Tensor(int r, int c): rows(r), cols(c), data(r * c, 0.0f) {}
         float& operator()(int r, int c) { return data[r * cols + c]; }
-        float operator()(int r, int c) const { return data[r * cols + c] }
+        float operator()(int r, int c) const { return data[r * cols + c]; }
         float* getData() { return data.data(); }
         const float* getData() const { return data.data(); }
         int getRows() const { return rows; }
@@ -31,8 +31,8 @@ class Operator
 {
     public:
         virtual ~Operator() = default;
-        virtal Tensor forward(const Tensor& input) = 0;
-}
+        virtual Tensor forward(const Tensor& input) = 0;
+};
 
 class ReLU: public Operator
 {
@@ -53,3 +53,28 @@ class ReLU: public Operator
 
 };
 
+
+class Softmax: public Operator
+{
+    public:
+        Tensor forward(const Tensor& input) override
+        {
+            //Output
+            Tensor output(input.getRows(), input.getCols());
+
+            //Input
+            const float* in = input.getData();
+
+            //init
+            
+            //compute output
+            float maxVal = 0.0f;
+            for(int i = 0; i < input.getSize(); i++)
+            {
+                maxVal = std::max(maxVal, in[i]);
+            }
+
+            
+        }
+
+};
