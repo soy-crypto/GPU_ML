@@ -150,8 +150,7 @@ int main()
     Tensor output = graph.run(input);
     auto end = std::chrono::high_resolution_clock::now();
 
-    double latency =
-        std::chrono::duration<double, std::milli>(end - start).count();
+    double latency = std::chrono::duration<double, std::milli>(end - start).count();
 
     // Output
     std::cout << "Output:\n";
