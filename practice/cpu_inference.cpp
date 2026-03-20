@@ -61,20 +61,45 @@ class Softmax: public Operator
         {
             //Output
             Tensor output(input.getRows(), input.getCols());
+            float* out = output.getData();
 
-            //Input
+            //normalization
             const float* in = input.getData();
-
-            //init
-            
-            //compute output
-            float maxVal = 0.0f;
+            float maxVal = *(std::max_element(in, in + input.getSize())), sum = 0.0f;
             for(int i = 0; i < input.getSize(); i++)
             {
-                maxVal = std::max(maxVal, in[i]);
+                out[i] = std::exp(in[i] - maxVal);
+                sum += out[i];
             }
 
-            
+            for(int i = 0; i < input.getSize(); i++)
+            {
+                out[i] /= sum;
+            }
+
+            //return
+            return output;
         }
 
 };
+
+
+class Graph
+{
+    private:
+        std::vector<std::unique_ptr<Operator>> ops;
+
+    public:
+        void add_op(std::unique_ptr<Operator> op) { ops.push_back(std::move(op)); }
+        Tensor run(const Tensor& input) const
+        {
+            Tensor x = input;
+            for(const auto& op : ops)
+            {
+                x = op->forward(x);
+            }
+
+            return x;
+        }
+        
+}
