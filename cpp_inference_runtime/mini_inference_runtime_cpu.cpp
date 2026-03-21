@@ -11,18 +11,10 @@
 class Tensor
 {
 public:
-    Tensor(int r, int c)
-        : rows(r), cols(c), data(r * c, 0.0f) {}
+    Tensor(int r, int c) : rows(r), cols(c), data(r * c, 0.0f) {}
 
-    float& operator()(int r, int c)
-    {
-        return data[r * cols + c];
-    }
-
-    float operator()(int r, int c) const
-    {
-        return data[r * cols + c];
-    }
+    float& operator()(int r, int c) { return data[r * cols + c]; }
+    float operator()(int r, int c) const { return data[r * cols + c]; }
 
     float* getData() { return data.data(); }
     const float* getData() const { return data.data(); }
@@ -79,13 +71,11 @@ public:
     Tensor forward(const Tensor& input) override
     {
         Tensor output(input.getRows(), input.getCols());
-
-        const float* in = input.getData();
         float* out = output.getData();
 
+        const float* in = input.getData();
         int rows = input.getRows();
         int cols = input.getCols();
-
         for (int i = 0; i < rows; i++)
         {
             const float* row_in = in + i * cols;
@@ -118,6 +108,9 @@ public:
 // ============================
 class Graph
 {
+private:
+    std::vector<std::unique_ptr<Operator>> ops;
+
 public:
     void add_op(std::unique_ptr<Operator> op)
     {
@@ -127,7 +120,6 @@ public:
     Tensor run(const Tensor& input) const
     {
         Tensor x = input;
-
         for (const auto& op : ops)
         {
             x = op->forward(x);
@@ -136,8 +128,6 @@ public:
         return x;
     }
 
-private:
-    std::vector<std::unique_ptr<Operator>> ops;
 };
 
 // ============================
