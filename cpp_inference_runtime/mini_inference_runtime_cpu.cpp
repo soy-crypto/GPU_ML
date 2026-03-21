@@ -5,9 +5,7 @@
 #include <cmath>
 #include <memory>
 
-////////////////////////////////////////////////////////////
 // Tensor
-////////////////////////////////////////////////////////////
 class Tensor
 {
 private:
@@ -29,9 +27,7 @@ public:
     int getSize() const { return rows * cols; }
 };
 
-////////////////////////////////////////////////////////////
-// Operator Interface
-////////////////////////////////////////////////////////////
+// Operator
 class Operator
 {
 public:
@@ -39,69 +35,67 @@ public:
     virtual Tensor forward(const Tensor& input) = 0;
 };
 
-////////////////////////////////////////////////////////////
-// ReLU
-////////////////////////////////////////////////////////////
+// ReLU (1D loop is fine)
 class ReLU : public Operator
 {
 public:
     Tensor forward(const Tensor& input) override
     {
+        int size = input.getSize();
+
         Tensor output(input.getRows(), input.getCols());
 
         const float* in = input.getData();
         float* out = output.getData();
 
-        for (int i = 0; i < input.getSize(); i++)
+        for (int i = 0; i < size; i++)
         {
             out[i] = std::max(0.0f, in[i]);
-        }
-
-        return output; // RVO / move
-    }
-};
-
-////////////////////////////////////////////////////////////
-// Softmax (simple version: whole tensor)
-////////////////////////////////////////////////////////////
-class Softmax : public Operator
-{
-public:
-    Tensor forward(const Tensor& input) override
-    {
-        Tensor output(input.getRows(), input.getCols());
-
-        const float* in = input.getData();
-        float* out = output.getData();
-
-        // Find max (for numerical stability)
-        float maxVal = in[0];
-        for (int i = 1; i < input.getSize(); i++)
-        {
-            maxVal = std::max(maxVal, in[i]);
-        }
-
-        // Compute exp and sum
-        float sum = 0.0f;
-        for (int i = 0; i < input.getSize(); i++)
-        {
-            out[i] = std::exp(in[i] - maxVal);
-            sum += out[i];
-        }
-
-        // Normalize
-        for (int i = 0; i < input.getSize(); i++)
-        {
-            out[i] /= sum;
         }
 
         return output;
     }
 };
 
-////////////////////////////////////////////////////////////
+// Softmax (row-wise)
+class Softmax : public Operator
+{
+public:
+    Tensor forward(const Tensor& input) override
+    {
+        int rows = input.getRows();
+        int cols = input.getCols();
+
+        Tensor output(rows, cols);
+
+        const float* in = input.getData();
+        float* out = output.getData();
+
+        for (int r = 0; r < rows; r++)
+        {
+            const float* row_in = in + r * cols;
+            float* row_out = out + r * cols;
+
+            float maxVal = *std::max_element(row_in, row_in + cols);
+
+            float sum = 0.0f;
+            for (int c = 0; c < cols; c++)
+            {
+                row_out[c] = std::exp(row_in[c] - maxVal);
+                sum += row_out[c];
+            }
+
+            for (int c = 0; c < cols; c++)
+            {
+                row_out[c] /= sum;
+            }
+        }
+
+        return output;
+    }
+};
+
 // Graph
-////////////////////////////////////////////////////////////
 class Graph
 {
 private:
@@ -119,25 +113,23 @@ public:
 
         for (const auto& op : ops)
         {
-            x = op->forward(x); // relies on move / RVO
+            x = op->forward(x);
         }
 
         return x;
     }
 };
 
-////////////////////////////////////////////////////////////
-// Main
-////////////////////////////////////////////////////////////
+// main
 int main()
 {
     // Input
     Tensor input(1, 3);
-    float* data = input.getData();
+    float* in = input.getData();
 
     for (int i = 0; i < input.getSize(); i++)
     {
-        data[i] = static_cast<float>(i);
+        in[i] = static_cast<float>(i);
     }
 
     // Graph
@@ -150,18 +142,15 @@ int main()
     Tensor output = graph.run(input);
     auto end = std::chrono::high_resolution_clock::now();
 
-    double latency = std::chrono::duration<double, std::milli>(end - start).count();
-
     // Output
-    std::cout << "Output:\n";
     const float* out = output.getData();
-
     for (int i = 0; i < output.getSize(); i++)
     {
         std::cout << out[i] << " ";
     }
 
-    std::cout << "\nLatency: " << latency << " ms\n";
+    double latency = std::chrono::duration<double, std::milli>(end - start).count();
+    std::cout << "\nlatency: " << latency << " ms\n";
 
     return 0;
 }
