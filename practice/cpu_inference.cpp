@@ -51,7 +51,6 @@ class ReLU: public Operator
             }
 
             return output;
-            
         }
 
 };
@@ -93,3 +92,66 @@ class Softmax: public Operator
         }//forward
 
 };
+
+
+class Graph
+{
+    private:
+        std::vector<std::unique_ptr<Operator>> ops;
+    
+    
+    public:
+        void add_op(std::unique_ptr<Operator> op)
+        {
+            ops.push_back(std::move(op));
+        }
+
+        Tensor run(const Tensor& input) const
+        {
+            Tensor x = input;
+            for(const auto& op : ops)
+            {
+                x = op->forward(x);
+            }
+
+            return x;
+        }
+
+};
+
+
+int main()
+{
+    // Input
+    Tensor input(1, 3);
+    float* data = input.getData();
+    int size = input.getSize();
+    for(int i = 0; i < size; i++)
+    {
+        data[i] = static_cast<float>(i);
+    }
+
+    // Graph
+    Graph graph;
+    graph.add_op(std::make_unique<ReLU>());
+    graph.add_op(std::make_unique<Softmax>());
+
+    // Run
+    auto start = std::chrono::high_resolution_clock::now();
+    Tensor output = graph.run(input);
+    auto end = std::chrono::high_resolution_clock::now();
+
+    // Print
+    const float* out = output.getData();
+    for(int i = 0; i < output.getSize(); i++)
+    {
+        std::cout << out[i] << " ";
+    }
+
+    double latency = std::chrono::duration<double, std::milli>(end - start).count();
+    std::cout << "\ latency: " << latency << " ms" << std::endl;
+
+    // Return
+    return 0;
+    
+}
