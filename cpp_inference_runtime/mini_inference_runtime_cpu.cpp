@@ -90,6 +90,7 @@ class Softmax: public Operator
             return output;
             
         }//forward
+        
 
 };
 
