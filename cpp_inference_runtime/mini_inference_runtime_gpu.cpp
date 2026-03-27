@@ -1,10 +1,10 @@
 #include <iostream>
 #include <vector>
+#include <memory>
 #include <chrono>
+#include <iomanip>
 #include <algorithm>
 #include <cmath>
-#include <memory>
-#include <iomanip>
 #include <cuda_runtime.h>
 
 ////////////////////////////////////////////////////////////
@@ -14,18 +14,17 @@
 #define CHECK_CUDA(call)                                                     \
     do                                                                       \
     {                                                                        \
-        cudaError_t err = call;                                              \
-        if(err != cudaSuccess)                                               \
+        cudaError_t err = (call);                                            \
+        if (err != cudaSuccess)                                              \
         {                                                                    \
             std::cerr << "CUDA error: " << cudaGetErrorString(err)           \
                       << " at line " << __LINE__ << std::endl;               \
             std::exit(1);                                                    \
-        }   
-                                                                         \
-    } while(0)
+        }                                                                    \
+    } while (0)
 
 ////////////////////////////////////////////////////////////
-// Tensor (CPU)
+// Host Tensor
 ////////////////////////////////////////////////////////////
 
 class Tensor
@@ -48,168 +47,319 @@ class Tensor
             return data[r * cols + c];
         }
 
-        float* getData() { return data.data(); }
-        const float* getData() const { return data.data(); }
-
-        int getRows() const { return rows; }
-        int getCols() const { return cols; }
-        int getSize() const { return rows * cols; }
-
-};
-
-////////////////////////////////////////////////////////////
-// Operator interface
-////////////////////////////////////////////////////////////
-
-class Operator
-{
-    public:
-        virtual Tensor forward(const Tensor& input) = 0;
-        virtual ~Operator() = default;
-
-};
-
-////////////////////////////////////////////////////////////
-// CPU ReLU
-////////////////////////////////////////////////////////////
-
-class ReLU : public Operator
-{
-    public:
-        Tensor forward(const Tensor& input) override
+        float* getData()
         {
-            Tensor output(input.getRows(), input.getCols());
-
-            const float* in = input.getData();
-            float* out = output.getData();
-
-            for (int i = 0; i < input.getSize(); i++)
-            {
-                out[i] = std::max(0.0f, in[i]);
-            }
-
-            return output;
+            return data.data();
         }
 
-};
-
-////////////////////////////////////////////////////////////
-// CPU Softmax
-////////////////////////////////////////////////////////////
-
-class Softmax : public Operator
-{
-    public:
-        Tensor forward(const Tensor& input) override
+        const float* getData() const
         {
-            Tensor output(input.getRows(), input.getCols());
-
-            const float* in = input.getData();
-            float* out = output.getData();
-
-            float maxVal = in[0];
-            for (int i = 1; i < input.getSize(); i++)
-            {
-                maxVal = std::max(maxVal, in[i]);
-            }
-
-            float sum = 0.0f;
-            for (int i = 0; i < input.getSize(); i++)
-            {
-                out[i] = std::exp(in[i] - maxVal);
-                sum += out[i];
-            }
-
-            for (int i = 0; i < input.getSize(); i++)
-            {
-                out[i] /= sum;
-            }
-
-            return output;
+            return data.data();
         }
 
+        int getRows() const
+        {
+            return rows;
+        }
+
+        int getCols() const
+        {
+            return cols;
+        }
+
+        int getSize() const
+        {
+            return rows * cols;
+        }
 };
 
 ////////////////////////////////////////////////////////////
-// CUDA ReLU kernel
+// Device Tensor (RAII)
+////////////////////////////////////////////////////////////
+
+class DeviceTensor
+{
+    private:
+        float* data;
+        int rows;
+        int cols;
+
+    public:
+        DeviceTensor(int r, int c) : data(nullptr), rows(r), cols(c)
+        {
+            CHECK_CUDA(cudaMalloc(&data, getSize() * sizeof(float)));
+        }
+
+        ~DeviceTensor()
+        {
+            if (data != nullptr)
+            {
+                cudaFree(data);
+            }
+        }
+
+        DeviceTensor(const DeviceTensor&) = delete;
+        DeviceTensor& operator=(const DeviceTensor&) = delete;
+
+        DeviceTensor(DeviceTensor&& other) noexcept
+            : data(other.data), rows(other.rows), cols(other.cols)
+        {
+            other.data = nullptr;
+            other.rows = 0;
+            other.cols = 0;
+        }
+
+        DeviceTensor& operator=(DeviceTensor&& other) noexcept
+        {
+            if (this != &other)
+            {
+                if (data != nullptr)
+                {
+                    cudaFree(data);
+                }
+
+                data = other.data;
+                rows = other.rows;
+                cols = other.cols;
+
+                other.data = nullptr;
+                other.rows = 0;
+                other.cols = 0;
+            }
+            return *this;
+        }
+
+        float* getData()
+        {
+            return data;
+        }
+
+        const float* getData() const
+        {
+            return data;
+        }
+
+        int getRows() const
+        {
+            return rows;
+        }
+
+        int getCols() const
+        {
+            return cols;
+        }
+
+        int getSize() const
+        {
+            return rows * cols;
+        }
+
+        void copyFromHost(const Tensor& hostTensor)
+        {
+            if (hostTensor.getRows() != rows || hostTensor.getCols() != cols)
+            {
+                std::cerr << "Shape mismatch in copyFromHost\n";
+                std::exit(1);
+            }
+
+            CHECK_CUDA(cudaMemcpy(
+                data,
+                hostTensor.getData(),
+                getSize() * sizeof(float),
+                cudaMemcpyHostToDevice
+            ));
+        }
+
+        void copyToHost(Tensor& hostTensor) const
+        {
+            if (hostTensor.getRows() != rows || hostTensor.getCols() != cols)
+            {
+                std::cerr << "Shape mismatch in copyToHost\n";
+                std::exit(1);
+            }
+
+            CHECK_CUDA(cudaMemcpy(
+                hostTensor.getData(),
+                data,
+                getSize() * sizeof(float),
+                cudaMemcpyDeviceToHost
+            ));
+        }
+};
+
+////////////////////////////////////////////////////////////
+// GPU Operator interface
+////////////////////////////////////////////////////////////
+
+class GPUOperator
+{
+    public:
+        virtual DeviceTensor forward(const DeviceTensor& input) = 0;
+        virtual ~GPUOperator() = default;
+};
+
+////////////////////////////////////////////////////////////
+// ReLU kernel
 ////////////////////////////////////////////////////////////
 
 __global__ void relu_kernel(const float* input, float* output, int N)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
+
     if (i < N)
     {
-        output[i] = input[i] > 0.0f ? input[i] : 0.0f;
+        output[i] = (input[i] > 0.0f) ? input[i] : 0.0f;
     }
-
 }
 
 ////////////////////////////////////////////////////////////
 // GPU ReLU
 ////////////////////////////////////////////////////////////
 
-class GPUReLU : public Operator
+class GPUReLU : public GPUOperator
 {
     public:
-        Tensor forward(const Tensor& input) override
+        DeviceTensor forward(const DeviceTensor& input) override
         {
-            Tensor output(input.getRows(), input.getCols());
+            DeviceTensor output(input.getRows(), input.getCols());
+
             int N = input.getSize();
-            size_t bytes = N * sizeof(float);
+            int block_size = 256;
+            int grid_size = (N + block_size - 1) / block_size;
 
-            float* d_input = nullptr;
-            float* d_output = nullptr;
+            relu_kernel<<<grid_size, block_size>>>(
+                input.getData(),
+                output.getData(),
+                N
+            );
 
-            CHECK_CUDA(cudaMalloc(&d_input, bytes));
-            CHECK_CUDA(cudaMalloc(&d_output, bytes));
-
-            CHECK_CUDA(cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice));
-
-            int block = 256;
-            int grid = (N + block - 1) / block;
-
-            relu_kernel<<<grid, block>>>(d_input, d_output, N);
             CHECK_CUDA(cudaGetLastError());
             CHECK_CUDA(cudaDeviceSynchronize());
 
-            CHECK_CUDA(cudaMemcpy(output.getData(), d_output, bytes, cudaMemcpyDeviceToHost));
-
-            CHECK_CUDA(cudaFree(d_input));
-            CHECK_CUDA(cudaFree(d_output));
-
             return output;
         }
-
 };
 
 ////////////////////////////////////////////////////////////
-// Graph (SAFE version)
+// Simple GPU Softmax
+// One block version for demo / learning purpose
 ////////////////////////////////////////////////////////////
 
-class Graph
+__global__ void softmax_kernel(const float* input, float* output, int N)
+{
+    __shared__ float shared_max[256];
+    __shared__ float shared_sum[256];
+
+    int tid = threadIdx.x;
+    int stride = blockDim.x;
+
+    float local_max = -1e20f;
+    for (int i = tid; i < N; i += stride)
+    {
+        local_max = fmaxf(local_max, input[i]);
+    }
+
+    shared_max[tid] = local_max;
+    __syncthreads();
+
+    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
+    {
+        if (tid < offset)
+        {
+            shared_max[tid] = fmaxf(shared_max[tid], shared_max[tid + offset]);
+        }
+        __syncthreads();
+    }
+
+    float max_val = shared_max[0];
+
+    float local_sum = 0.0f;
+    for (int i = tid; i < N; i += stride)
+    {
+        local_sum += expf(input[i] - max_val);
+    }
+
+    shared_sum[tid] = local_sum;
+    __syncthreads();
+
+    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
+    {
+        if (tid < offset)
+        {
+            shared_sum[tid] += shared_sum[tid + offset];
+        }
+        __syncthreads();
+    }
+
+    float sum_val = shared_sum[0];
+
+    for (int i = tid; i < N; i += stride)
+    {
+        output[i] = expf(input[i] - max_val) / sum_val;
+    }
+}
+
+////////////////////////////////////////////////////////////
+// GPU Softmax
+////////////////////////////////////////////////////////////
+
+class GPUSoftmax : public GPUOperator
+{
+    public:
+        DeviceTensor forward(const DeviceTensor& input) override
+        {
+            DeviceTensor output(input.getRows(), input.getCols());
+
+            int N = input.getSize();
+            int block_size = 256;
+
+            softmax_kernel<<<1, block_size>>>(
+                input.getData(),
+                output.getData(),
+                N
+            );
+
+            CHECK_CUDA(cudaGetLastError());
+            CHECK_CUDA(cudaDeviceSynchronize());
+
+            return output;
+        }
+};
+
+////////////////////////////////////////////////////////////
+// GPU Graph
+////////////////////////////////////////////////////////////
+
+class GPUGraph
 {
     private:
-        std::vector<std::unique_ptr<Operator>> ops;
+        std::vector<std::unique_ptr<GPUOperator>> ops;
 
     public:
-        void add_op(std::unique_ptr<Operator> op)
+        void add_op(std::unique_ptr<GPUOperator> op)
         {
             ops.push_back(std::move(op));
         }
 
-        Tensor run(const Tensor& input)
+        DeviceTensor run(const DeviceTensor& input)
         {
-            Tensor x = input;
+            DeviceTensor x(input.getRows(), input.getCols());
+
+            CHECK_CUDA(cudaMemcpy(
+                x.getData(),
+                input.getData(),
+                input.getSize() * sizeof(float),
+                cudaMemcpyDeviceToDevice
+            ));
 
             for (const auto& op : ops)
             {
-                Tensor out = op->forward(x);
-                x = std::move(out);   // 🔥 avoids copy
+                DeviceTensor out = op->forward(x);
+                x = std::move(out);
             }
 
             return x;
         }
-        
 };
 
 ////////////////////////////////////////////////////////////
@@ -219,25 +369,31 @@ class Graph
 int main()
 {
     Tensor input(1, 6);
-    float* data = input.getData();
+    float* h_data = input.getData();
 
-    data[0] = -2.0f;
-    data[1] = -1.0f;
-    data[2] =  0.0f;
-    data[3] =  1.0f;
-    data[4] =  2.0f;
-    data[5] =  3.0f;
+    h_data[0] = -2.0f;
+    h_data[1] = -1.0f;
+    h_data[2] =  0.0f;
+    h_data[3] =  1.0f;
+    h_data[4] =  2.0f;
+    h_data[5] =  3.0f;
 
-    Graph graph;
+    DeviceTensor d_input(input.getRows(), input.getCols());
+    d_input.copyFromHost(input);
 
+    GPUGraph graph;
     graph.add_op(std::make_unique<GPUReLU>());
-    graph.add_op(std::make_unique<Softmax>());
+    graph.add_op(std::make_unique<GPUSoftmax>());
 
     auto start = std::chrono::high_resolution_clock::now();
-    Tensor output = graph.run(input);
+    DeviceTensor d_output = graph.run(d_input);
     auto end = std::chrono::high_resolution_clock::now();
 
-    double latency_ms = std::chrono::duration<double, std::milli>(end - start).count();
+    Tensor output(input.getRows(), input.getCols());
+    d_output.copyToHost(output);
+
+    double latency_ms =
+        std::chrono::duration<double, std::milli>(end - start).count();
 
     std::cout << std::fixed << std::setprecision(6);
 
@@ -259,5 +415,4 @@ int main()
     std::cout << "Inference done\n";
 
     return 0;
-    
 }
