@@ -27,7 +27,6 @@ class Tensor
         int getRows() const { return rows; }
         int getCols() const { return cols; }
         int getSize() const { return rows * cols; }
-        
 };
 
 ////////////////////////////////////////////////////////////
@@ -36,9 +35,9 @@ class Tensor
 
 class Operator
 {
-public:
-    virtual Tensor forward(const Tensor& input) = 0;
-    virtual ~Operator() = default;
+    public:
+        virtual Tensor forward(const Tensor& input) = 0;
+        virtual ~Operator() = default;
 };
 
 ////////////////////////////////////////////////////////////
@@ -69,14 +68,11 @@ class GPUReLU : public Operator
 
             float *d_input, *d_output;
 
-            // 1. Allocate
             cudaMalloc(&d_input, bytes);
             cudaMalloc(&d_output, bytes);
 
-            // 2. H2D
             cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice);
 
-            // 3. Kernel
             int block = 256;
             int grid  = (N + block - 1) / block;
 
@@ -85,10 +81,8 @@ class GPUReLU : public Operator
             cudaGetLastError();
             cudaDeviceSynchronize();
 
-            // 4. D2H
             cudaMemcpy(output.getData(), d_output, bytes, cudaMemcpyDeviceToHost);
 
-            // 5. Free
             cudaFree(d_input);
             cudaFree(d_output);
 
@@ -97,78 +91,65 @@ class GPUReLU : public Operator
 };
 
 ////////////////////////////////////////////////////////////
-// Softmax kernels (multi-block)
+// Single-block Softmax kernel
 ////////////////////////////////////////////////////////////
 
-// Stage 1: block max
-__global__ void block_max_kernel(const float* input, float* block_max, int N)
+__global__ void softmax_kernel(const float* input, float* output, int N)
 {
-    __shared__ float sdata[256];
+    __shared__ float s_max[256];
+    __shared__ float s_sum[256];
 
     int tid = threadIdx.x;
-    int idx = blockIdx.x * blockDim.x + tid;
 
-    float val = (idx < N) ? input[idx] : -1e20f;
-    sdata[tid] = val;
+    // 1. local max
+    float local_max = -1e20f;
+    for (int i = tid; i < N; i += blockDim.x)
+    {
+        local_max = fmaxf(local_max, input[i]);
+    }
+
+    s_max[tid] = local_max;
     __syncthreads();
 
+    // reduce max
     for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
     {
         if (tid < offset)
-            sdata[tid] = fmaxf(sdata[tid], sdata[tid + offset]);
-
+            s_max[tid] = fmaxf(s_max[tid], s_max[tid + offset]);
         __syncthreads();
     }
 
-    if (tid == 0)
-        block_max[blockIdx.x] = sdata[0];
-}
+    float max_val = s_max[0];
 
-// Stage 2: block sum
-__global__ void block_sum_kernel(const float* input,
-                                 float* block_sum,
-                                 float max_val,
-                                 int N)
-{
-    __shared__ float sdata[256];
+    // 2. local sum
+    float local_sum = 0.0f;
+    for (int i = tid; i < N; i += blockDim.x)
+    {
+        local_sum += expf(input[i] - max_val);
+    }
 
-    int tid = threadIdx.x;
-    int idx = blockIdx.x * blockDim.x + tid;
-
-    float val = 0.0f;
-    if (idx < N)
-        val = expf(input[idx] - max_val);
-
-    sdata[tid] = val;
+    s_sum[tid] = local_sum;
     __syncthreads();
 
+    // reduce sum
     for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
     {
         if (tid < offset)
-            sdata[tid] += sdata[tid + offset];
-
+            s_sum[tid] += s_sum[tid + offset];
         __syncthreads();
     }
 
-    if (tid == 0)
-        block_sum[blockIdx.x] = sdata[0];
-}
+    float sum_val = s_sum[0];
 
-// Stage 3: normalize
-__global__ void normalize_kernel(const float* input,
-                                 float* output,
-                                 float max_val,
-                                 float sum_val,
-                                 int N)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (idx < N)
-        output[idx] = expf(input[idx] - max_val) / sum_val;
+    // 3. normalize
+    for (int i = tid; i < N; i += blockDim.x)
+    {
+        output[i] = expf(input[i] - max_val) / sum_val;
+    }
 }
 
 ////////////////////////////////////////////////////////////
-// GPU Softmax
+// GPU Softmax (single-block)
 ////////////////////////////////////////////////////////////
 
 class GPUSoftmax : public Operator
@@ -181,64 +162,27 @@ class GPUSoftmax : public Operator
             int N = input.getSize();
             size_t bytes = N * sizeof(float);
 
-            int block = 256;
-            int grid  = (N + block - 1) / block;
-
             float *d_input, *d_output;
-            float *d_block_max, *d_block_sum;
 
-            // 1. Allocate
             cudaMalloc(&d_input, bytes);
             cudaMalloc(&d_output, bytes);
-            cudaMalloc(&d_block_max, grid * sizeof(float));
-            cudaMalloc(&d_block_sum, grid * sizeof(float));
 
-            // 2. H2D
             cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice);
 
-            // ===== Stage 1: max =====
-            block_max_kernel<<<grid, block>>>(d_input, d_block_max, N);
-            cudaDeviceSynchronize();
+            int block = 256;
 
-            std::vector<float> h_block_max(grid);
-            cudaMemcpy(h_block_max.data(), d_block_max,
-                    grid * sizeof(float), cudaMemcpyDeviceToHost);
-
-            float global_max = h_block_max[0];
-            for (int i = 1; i < grid; i++)
-                global_max = std::max(global_max, h_block_max[i]);
-
-            // ===== Stage 2: sum =====
-            block_sum_kernel<<<grid, block>>>(d_input, d_block_sum, global_max, N);
-            cudaDeviceSynchronize();
-
-            std::vector<float> h_block_sum(grid);
-            cudaMemcpy(h_block_sum.data(), d_block_sum,
-                    grid * sizeof(float), cudaMemcpyDeviceToHost);
-
-            float global_sum = 0.0f;
-            for (float v : h_block_sum)
-                global_sum += v;
-
-            // ===== Stage 3: normalize =====
-            normalize_kernel<<<grid, block>>>(
-                d_input, d_output, global_max, global_sum, N
-            );
+            softmax_kernel<<<1, block>>>(d_input, d_output, N);
 
             cudaGetLastError();
             cudaDeviceSynchronize();
 
-            // 3. D2H
             cudaMemcpy(output.getData(), d_output, bytes, cudaMemcpyDeviceToHost);
 
-            // 4. Free
             cudaFree(d_input);
             cudaFree(d_output);
-            cudaFree(d_block_max);
-            cudaFree(d_block_sum);
 
             return output;
-    }
+        }
 };
 
 ////////////////////////////////////////////////////////////

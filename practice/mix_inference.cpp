@@ -32,7 +32,7 @@ class GPUReLU: public operator
     public:
         Tensor forward(const Tensor& input) override
         {
-            //
+            // Host output
             Tensor output(input.getRows(), input.getCols());
             int size = input.getSize();
             size_t bytes = static_cast<size_t>(size) * sizeof(float);
@@ -61,7 +61,6 @@ class GPUReLU: public operator
 
             // Return
             return output;
-
         }
 
 };
@@ -71,4 +70,5 @@ class GPUSoftMax: public Operator
 {
     public:
         
+
 }
