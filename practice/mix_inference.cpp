@@ -32,15 +32,15 @@ class GPUReLU: public operator
     public:
         Tensor forward(const Tensor& input) override
         {
-            // Host output
+            // Init
             Tensor output(input.getRows(), input.getCols());
             int size = input.getSize();
             size_t bytes = static_cast<size_t>(size) * sizeof(float);
-
-            // Init
+            
             float* d_input, d_output;
             cudaMalloc(&d_input, bytes);
             cudaMalloc(&d_output, bytes);
+
             int block = 256;
             int grid = (size + block - 1) / block;
 
@@ -70,5 +70,6 @@ class GPUSoftMax: public Operator
 {
     public:
         
+
 
 }
