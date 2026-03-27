@@ -5,7 +5,8 @@
 #include <cmath>
 #include <memory>
 
-//Tensor
+
+// Tensor
 class Tensor
 {
     private:
@@ -22,16 +23,15 @@ class Tensor
         int getRows() const { return rows; }
         int getCols() const { return cols; }
         int getSize() const { return rows * cols; }
-
+        
 };
 
 
 class Operator
 {
-    public: 
+    public:
         virtual ~Operator() = default;
         virtual Tensor forward(const Tensor& input) = 0;
-    
 };
 
 
@@ -40,15 +40,15 @@ class ReLU: public Operator
     public:
         Tensor forward(const Tensor& input) override
         {
-            Tensor output(input.getRows(), input.getCols());
+            Tensor output(input..getRows(), input.getCols());
             float* out = output.getData();
-            
+
             const float* in = input.getData();
             int size = input.getSize();
             for(int i = 0; i < size; i++)
             {
                 out[i] = std::max(0.0f, in[i]);
-            }
+            } 
 
             return output;
         }
@@ -62,7 +62,7 @@ class Softmax: public Operator
         Tensor forward(const Tensor& input) override
         {
             Tensor output(input.getRows(), input.getCols());
-            float* out = output.getData();
+            float* out = out.getData();
 
             const float* in = input.getData();
             int rows = input.getRows(), cols = input.getCols();
@@ -70,12 +70,10 @@ class Softmax: public Operator
             {
                 const float* row_in = in + i * cols;
                 float* row_out = out + i * cols;
-                
-                float maxVal = *(std::max_element(row_in, row_in + cols));
-                float sum = 0.0f;
+                float sum = 0.0f, maxValue = *(std::max_element(row_in, row_in + cols));
                 for(int k = 0; k < cols; k++)
                 {
-                    row_out[k] = std::exp(row_in[k] - maxVal);
+                    row_out[k] = std::exp(row_in[k] - maxValue);
                     sum += row_out[k];
                 }
 
@@ -83,14 +81,11 @@ class Softmax: public Operator
                 {
                     row_out[k] /= sum;
                 }
-                
-            }//for
 
-            // Return
+            }// for
+
             return output;
-            
-        }//forward
-        
+        }
 
 };
 
@@ -99,31 +94,30 @@ class Graph
 {
     private:
         std::vector<std::unique_ptr<Operator>> ops;
-    
-    
+
     public:
-        void add_op(std::unique_ptr<Operator> op)
-        {
-            ops.push_back(std::move(op));
+        void add_op(std::unique_ptr<Operator> op) 
+        { 
+            ops.push_back(std::move(op)); 
         }
 
         Tensor run(const Tensor& input) const
         {
             Tensor x = input;
-            for(const auto& op : ops)
+            for(auto const& op : ops)
             {
                 x = op->forward(x);
             }
 
             return x;
         }
-
+    
 };
 
 
 int main()
 {
-    // Input
+    // Init
     Tensor input(1, 3);
     float* data = input.getData();
     int size = input.getSize();
@@ -150,7 +144,7 @@ int main()
     }
 
     double latency = std::chrono::duration<double, std::milli>(end - start).count();
-    std::cout << "\ latency: " << latency << " ms" << std::endl;
+    std::cout << "\n latency " << latency << " ms" << std::endl;
 
     // Return
     return 0;
