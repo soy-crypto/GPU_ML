@@ -14,7 +14,7 @@
 #define CHECK_CUDA(call)                                                     \
     do                                                                       \
     {                                                                        \
-        cudaError_t err = call;                                              \
+        cudaError_t err = (call);                                            \
         if (err != cudaSuccess)                                              \
         {                                                                    \
             std::cerr << "CUDA error: " << cudaGetErrorString(err)           \
@@ -43,7 +43,6 @@ class Tensor
         int getRows() const { return rows; }
         int getCols() const { return cols; }
         int getSize() const { return rows * cols; }
-
 };
 
 ////////////////////////////////////////////////////////////
@@ -64,69 +63,10 @@ class Operator
 __global__ void relu_kernel(const float* input, float* output, int N)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
+
     if (i < N)
     {
-        output[i] = input[i] > 0.0f ? input[i] : 0.0f;
-    }
-}
-
-////////////////////////////////////////////////////////////
-// CUDA Softmax kernel (single block)
-////////////////////////////////////////////////////////////
-
-__global__ void softmax_kernel(const float* input, float* output, int N)
-{
-    __shared__ float s_max[256];
-    __shared__ float s_sum[256];
-
-    int tid = threadIdx.x;
-
-    // 1. find max
-    float local_max = -1e20f;
-    for (int i = tid; i < N; i += blockDim.x)
-    {
-        local_max = fmaxf(local_max, input[i]);
-    }
-
-    s_max[tid] = local_max;
-    __syncthreads();
-
-    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
-    {
-        if (tid < offset)
-        {
-            s_max[tid] = fmaxf(s_max[tid], s_max[tid + offset]);
-        }
-        __syncthreads();
-    }
-
-    float max_val = s_max[0];
-
-    // 2. sum
-    float local_sum = 0.0f;
-    for (int i = tid; i < N; i += blockDim.x)
-    {
-        local_sum += expf(input[i] - max_val);
-    }
-
-    s_sum[tid] = local_sum;
-    __syncthreads();
-
-    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
-    {
-        if (tid < offset)
-        {
-            s_sum[tid] += s_sum[tid + offset];
-        }
-        __syncthreads();
-    }
-
-    float sum_val = s_sum[0];
-
-    // 3. normalize
-    for (int i = tid; i < N; i += blockDim.x)
-    {
-        output[i] = expf(input[i] - max_val) / sum_val;
+        output[i] = (input[i] > 0.0f) ? input[i] : 0.0f;
     }
 }
 
@@ -142,7 +82,7 @@ class GPUReLU : public Operator
             Tensor output(input.getRows(), input.getCols());
 
             int N = input.getSize();
-            size_t bytes = N * sizeof(float);
+            size_t bytes = static_cast<size_t>(N) * sizeof(float);
 
             float* d_input = nullptr;
             float* d_output = nullptr;
@@ -150,7 +90,12 @@ class GPUReLU : public Operator
             CHECK_CUDA(cudaMalloc(&d_input, bytes));
             CHECK_CUDA(cudaMalloc(&d_output, bytes));
 
-            CHECK_CUDA(cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice));
+            CHECK_CUDA(cudaMemcpy(
+                d_input,
+                input.getData(),
+                bytes,
+                cudaMemcpyHostToDevice
+            ));
 
             int block = 256;
             int grid = (N + block - 1) / block;
@@ -159,18 +104,103 @@ class GPUReLU : public Operator
             CHECK_CUDA(cudaGetLastError());
             CHECK_CUDA(cudaDeviceSynchronize());
 
-            CHECK_CUDA(cudaMemcpy(output.getData(), d_output, bytes, cudaMemcpyDeviceToHost));
+            CHECK_CUDA(cudaMemcpy(
+                output.getData(),
+                d_output,
+                bytes,
+                cudaMemcpyDeviceToHost
+            ));
 
             CHECK_CUDA(cudaFree(d_input));
             CHECK_CUDA(cudaFree(d_output));
 
             return output;
         }
-        
 };
 
 ////////////////////////////////////////////////////////////
-// GPU Softmax
+// Multi-block Softmax kernels
+////////////////////////////////////////////////////////////
+
+// Stage 1: each block computes a partial max
+__global__ void block_max_kernel(const float* input, float* block_max, int N)
+{
+    __shared__ float sdata[256];
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+
+    float val = (idx < N) ? input[idx] : -1e20f;
+    sdata[tid] = val;
+    __syncthreads();
+
+    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
+    {
+        if (tid < offset)
+        {
+            sdata[tid] = fmaxf(sdata[tid], sdata[tid + offset]);
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0)
+    {
+        block_max[blockIdx.x] = sdata[0];
+    }
+}
+
+// Stage 2: each block computes a partial sum using the global max
+__global__ void block_sum_kernel(const float* input,
+                                 float* block_sum,
+                                 float max_val,
+                                 int N)
+{
+    __shared__ float sdata[256];
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+
+    float val = 0.0f;
+    if (idx < N)
+    {
+        val = expf(input[idx] - max_val);
+    }
+
+    sdata[tid] = val;
+    __syncthreads();
+
+    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
+    {
+        if (tid < offset)
+        {
+            sdata[tid] += sdata[tid + offset];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0)
+    {
+        block_sum[blockIdx.x] = sdata[0];
+    }
+}
+
+// Stage 3: normalize
+__global__ void normalize_kernel(const float* input,
+                                 float* output,
+                                 float max_val,
+                                 float sum_val,
+                                 int N)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx < N)
+    {
+        output[idx] = expf(input[idx] - max_val) / sum_val;
+    }
+}
+
+////////////////////////////////////////////////////////////
+// GPU Softmax (multi-block)
 ////////////////////////////////////////////////////////////
 
 class GPUSoftmax : public Operator
@@ -181,26 +211,90 @@ class GPUSoftmax : public Operator
             Tensor output(input.getRows(), input.getCols());
 
             int N = input.getSize();
-            size_t bytes = N * sizeof(float);
+            size_t bytes = static_cast<size_t>(N) * sizeof(float);
+
+            int block = 256;
+            int grid = (N + block - 1) / block;
 
             float* d_input = nullptr;
             float* d_output = nullptr;
+            float* d_block_max = nullptr;
+            float* d_block_sum = nullptr;
 
             CHECK_CUDA(cudaMalloc(&d_input, bytes));
             CHECK_CUDA(cudaMalloc(&d_output, bytes));
+            CHECK_CUDA(cudaMalloc(&d_block_max, grid * sizeof(float)));
+            CHECK_CUDA(cudaMalloc(&d_block_sum, grid * sizeof(float)));
 
-            CHECK_CUDA(cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice));
+            CHECK_CUDA(cudaMemcpy(
+                d_input,
+                input.getData(),
+                bytes,
+                cudaMemcpyHostToDevice
+            ));
 
-            int block = 256;
-
-            softmax_kernel<<<1, block>>>(d_input, d_output, N);
+            // Stage 1: block-wise max
+            block_max_kernel<<<grid, block>>>(d_input, d_block_max, N);
             CHECK_CUDA(cudaGetLastError());
             CHECK_CUDA(cudaDeviceSynchronize());
 
-            CHECK_CUDA(cudaMemcpy(output.getData(), d_output, bytes, cudaMemcpyDeviceToHost));
+            // Copy partial max values back to CPU and reduce
+            std::vector<float> h_block_max(grid);
+            CHECK_CUDA(cudaMemcpy(
+                h_block_max.data(),
+                d_block_max,
+                grid * sizeof(float),
+                cudaMemcpyDeviceToHost
+            ));
+
+            float global_max = h_block_max[0];
+            for (int i = 1; i < grid; i++)
+            {
+                global_max = std::max(global_max, h_block_max[i]);
+            }
+
+            // Stage 2: block-wise sum(exp(x - global_max))
+            block_sum_kernel<<<grid, block>>>(d_input, d_block_sum, global_max, N);
+            CHECK_CUDA(cudaGetLastError());
+            CHECK_CUDA(cudaDeviceSynchronize());
+
+            // Copy partial sum values back to CPU and reduce
+            std::vector<float> h_block_sum(grid);
+            CHECK_CUDA(cudaMemcpy(
+                h_block_sum.data(),
+                d_block_sum,
+                grid * sizeof(float),
+                cudaMemcpyDeviceToHost
+            ));
+
+            float global_sum = 0.0f;
+            for (int i = 0; i < grid; i++)
+            {
+                global_sum += h_block_sum[i];
+            }
+
+            // Stage 3: normalize
+            normalize_kernel<<<grid, block>>>(
+                d_input,
+                d_output,
+                global_max,
+                global_sum,
+                N
+            );
+            CHECK_CUDA(cudaGetLastError());
+            CHECK_CUDA(cudaDeviceSynchronize());
+
+            CHECK_CUDA(cudaMemcpy(
+                output.getData(),
+                d_output,
+                bytes,
+                cudaMemcpyDeviceToHost
+            ));
 
             CHECK_CUDA(cudaFree(d_input));
             CHECK_CUDA(cudaFree(d_output));
+            CHECK_CUDA(cudaFree(d_block_max));
+            CHECK_CUDA(cudaFree(d_block_sum));
 
             return output;
         }
@@ -233,7 +327,6 @@ class Graph
 
             return x;
         }
-
 };
 
 ////////////////////////////////////////////////////////////
@@ -242,18 +335,23 @@ class Graph
 
 int main()
 {
-    Tensor input(1, 6);
+    Tensor input(1, 12);
     float* data = input.getData();
 
-    data[0] = -2.0f;
-    data[1] = -1.0f;
-    data[2] =  0.0f;
-    data[3] =  1.0f;
-    data[4] =  2.0f;
-    data[5] =  3.0f;
+    data[0]  = -2.0f;
+    data[1]  = -1.0f;
+    data[2]  =  0.0f;
+    data[3]  =  1.0f;
+    data[4]  =  2.0f;
+    data[5]  =  3.0f;
+    data[6]  =  0.5f;
+    data[7]  = -0.5f;
+    data[8]  =  4.0f;
+    data[9]  =  1.5f;
+    data[10] = -3.0f;
+    data[11] =  2.5f;
 
     Graph graph;
-
     graph.add_op(std::make_unique<GPUReLU>());
     graph.add_op(std::make_unique<GPUSoftmax>());
 
@@ -284,5 +382,4 @@ int main()
     std::cout << "Inference done\n";
 
     return 0;
-
 }
