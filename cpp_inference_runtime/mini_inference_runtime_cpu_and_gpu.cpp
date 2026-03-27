@@ -43,7 +43,7 @@ class Tensor
         int getRows() const { return rows; }
         int getCols() const { return cols; }
         int getSize() const { return rows * cols; }
-        
+
 };
 
 ////////////////////////////////////////////////////////////
@@ -166,6 +166,7 @@ class GPUReLU : public Operator
 
             return output;
         }
+        
 };
 
 ////////////////////////////////////////////////////////////
