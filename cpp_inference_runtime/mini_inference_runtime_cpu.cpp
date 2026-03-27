@@ -62,7 +62,7 @@ class Softmax: public Operator
         Tensor forward(const Tensor& input) override
         {
             Tensor output(input.getRows(), input.getCols());
-            float* out = out.getData();
+            float* out = output.getData();
 
             const float* in = input.getData();
             int rows = input.getRows(), cols = input.getCols();

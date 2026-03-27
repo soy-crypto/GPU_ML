@@ -38,15 +38,8 @@ class Tensor
     public:
         Tensor(int r, int c) : data(r * c, 0.0f), rows(r), cols(c) {}
 
-        float& operator()(int r, int c)
-        {
-            return data[r * cols + c];
-        }
-
-        float operator()(int r, int c) const
-        {
-            return data[r * cols + c];
-        }
+        float& operator()(int r, int c) { return data[r * cols + c]; }
+        float operator()(int r, int c) const { return data[r * cols + c]; }
 
         float* getData() { return data.data(); }
         const float* getData() const { return data.data(); }
