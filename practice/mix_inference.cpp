@@ -98,17 +98,19 @@ class GPUSoftMax: public Operator
 __global__ void softmax_kernel(const float* input, float* output, int rows, int cols)
 {
     // Check
-    int row = blockIdx.x, threads_per_block = blockDim.x, index = threadIdx.x;
+    int row = blockIdx.x, threads_per_block = blockDim.x, tid = threadIdx.x;
     if(row >= rows)
     {
         return;
     }
 
     // Init
-    __shared__ float max[threads_per_block], sum[threads_per_block];
-    const float* in_array = input + bId * cols, out_array = output + bId * cols;
+    __shared__ float max[256], sum[256];
+    const float* in_array = input + row * cols;
+    float* out_array = output + row * cols;
 
     // Compute
+    int index = tid;
     /* find local max */
     float local_max = -FLT_MAX;
     for(int i = index; i < cols; i += threads_per_block)
@@ -120,7 +122,7 @@ __global__ void softmax_kernel(const float* input, float* output, int rows, int 
     __syncthreads();
 
     /* find global max */
-    int global_max = -FLT_MAX;
+    float global_max = -FLT_MAX;
     for(int offset = threads_per_block / 2; offset > 0; offset /= 2)
     {
         if(index < offset)
@@ -134,13 +136,14 @@ __global__ void softmax_kernel(const float* input, float* output, int rows, int 
     global_max = max[0];
 
     /* compute local sum */
-    float local_sum = 0;
-    for(int i = index; i < cols; i++)
+    float local_sum = 0.0f;
+    for(int i = index; i < cols; i += threads_per_block)
     {
         local_sum += expf(in_array[i] - global_max);
     } 
 
     sum[index] = local_sum;
+    __syncthreads();
 
     /** find global sum */
     float global_sum = 0.0f;
@@ -159,10 +162,10 @@ __global__ void softmax_kernel(const float* input, float* output, int rows, int 
     /* normalize */
     for(int i = index; i < cols; i += threads_per_block)
     {
-        out_array[i] = in_array[i] / global_sum;
+        out_array[i] = expf(in_array[i] - global_max) / global_sum;
     }   
 
     // Return
     return;
-    
+
 }
