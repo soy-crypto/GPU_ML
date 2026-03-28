@@ -41,7 +41,6 @@ class GPUReLU: public operator
             cudaMalloc(&d_input, bytes);
             cudaMalloc(&d_output, bytes);
             cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice);
-
         
             // Call kernel
             int block = 256;
@@ -90,6 +89,7 @@ class GPUSoftMax: public Operator
 
             //Return
             return output;
+            
         }
 
 
