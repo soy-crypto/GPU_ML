@@ -6,6 +6,7 @@
 #include <memory>
 #include <iomanip>
 #include <cuda_runtime.h>
+#include <cfloat>
 
 
 __global__ void relu_kernel(const float* input, float* output, int N)
@@ -89,9 +90,79 @@ class GPUSoftMax: public Operator
 
             //Return
             return output;
-
         }
 
 };
 
 
+__global__ void softmax_kernel(const float* input, float* output, int rows, int cols)
+{
+    // Check
+    int row = blockIdx.x, threads_per_block = blockDim.x, index = threadIdx.x;
+    if(row >= rows)
+    {
+        return;
+    }
+
+    // Init
+    __shared__ float max[threads_per_block], sum[threads_per_block];
+    const float* in_array = input + bId * cols, out_array = output + bId * cols;
+
+    // Compute
+    /* find local max */
+    float local_max = -FLT_MAX;
+    for(int i = index; i < cols; i += threads_per_block)
+    {
+        local_max = fmaxf(local_max, in_array[i]);
+    }
+
+    max[index] = local_max;
+    __syncthreads();
+
+    /* find global max */
+    int global_max = -FLT_MAX;
+    for(int offset = threads_per_block / 2; offset > 0; offset /= 2)
+    {
+        if(index < offset)
+        {
+            max[index] = fmaxf(max[index], max[index + offset]);
+        }
+        
+        __syncthreads();
+    }
+
+    global_max = max[0];
+
+    /* compute local sum */
+    float local_sum = 0;
+    for(int i = index; i < cols; i++)
+    {
+        local_sum += expf(in_array[i] - global_max);
+    } 
+
+    sum[index] = local_sum;
+
+    /** find global sum */
+    float global_sum = 0.0f;
+    for(int offset = threads_per_block / 2; offset > 0; offset /= 2)
+    {
+        if(index < offset)
+        {
+            sum[index] = sum[index] + sum[index + offset];
+        }
+
+        __syncthreads();
+    }
+
+    global_sum = sum[0];
+
+    /* normalize */
+    for(int i = index; i < cols; i += threads_per_block)
+    {
+        out_array[i] = in_array[i] / global_sum;
+    }   
+
+    // Return
+    return;
+    
+}
