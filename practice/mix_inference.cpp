@@ -79,7 +79,7 @@ class GPUSoftMax: public Operator
             cudaMalloc(&d_input, bytes);
             cudaMalloc(&d_output, bytes);
 
-            int block = 256, grid = 1;
+            int block = 256, grid = input.getRows();
 
             //GPU
             cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice);
