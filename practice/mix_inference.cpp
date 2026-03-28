@@ -120,9 +120,9 @@ class GPUReLU: public operator
             cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice);
         
             // Call kernel
-            int block = 256;
-            int grid = (size + block - 1) / block;
-            relu_kernel<<<grid, block>>>(d_input, d_output, size);
+            int threads_per_block = 256;
+            int grid_size = (size + block - 1) / block;
+            relu_kernel<<<grid_size, threads_per_block>>>(d_input, d_output, size);
             cudaGetLastError();
             cudaDeviceSynchronize();
             cudaMemcpy(output.getData(), d_output, bytes, cudaMemcpyHostToDevice);
@@ -137,7 +137,10 @@ class GPUReLU: public operator
 
 };
 
-
+/**
+ * block_size = parallel threads inside one work unit
+   grid_size  = number of work units
+ */
 class GPUSoftMax: public Operator
 {
     public:
@@ -154,8 +157,8 @@ class GPUSoftMax: public Operator
             cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice);
 
             // Call kernel
-            int block = 256, grid = input.getRows();
-            softmax_kernel<<<grid, block>>>(d_input, d_output, input.getRows(), input.getCols());
+            int threads_per_block = 256, grid_size = input.getRows();
+            softmax_kernel<<<grid_size, threads_per_block>>>(d_input, d_output, input.getRows(), input.getCols());
             cudaGetLastError();
             cudaDeviceSynchronize();
             cudaMemcpy(output.getData(), d_output, bytes, cudaMemcpyDeviceToHost);
