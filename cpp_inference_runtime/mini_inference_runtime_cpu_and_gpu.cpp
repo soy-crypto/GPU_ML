@@ -95,8 +95,13 @@ class GPUReLU : public Operator
 ////////////////////////////////////////////////////////////
 __global__ void softmax_kernel(const float* input, float* output, int rows, int cols)
 {
-    int row = blockIdx.x;        // one block per row
+    int row = blockIdx.x;      // one block handles one row
     int tid = threadIdx.x;
+
+    if (row >= rows)
+    {
+        return;
+    }
 
     const float* row_input  = input  + row * cols;
     float*       row_output = output + row * cols;
@@ -104,8 +109,8 @@ __global__ void softmax_kernel(const float* input, float* output, int rows, int 
     __shared__ float s_max[256];
     __shared__ float s_sum[256];
 
-    // 1. find max (per row)
-    float local_max = -1e20f;
+    // 1. Find local max
+    float local_max = -FLT_MAX;
     for (int i = tid; i < cols; i += blockDim.x)
     {
         local_max = fmaxf(local_max, row_input[i]);
@@ -114,17 +119,19 @@ __global__ void softmax_kernel(const float* input, float* output, int rows, int 
     s_max[tid] = local_max;
     __syncthreads();
 
-    // reduction max
+    // 2. Reduce max
     for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
     {
         if (tid < offset)
+        {
             s_max[tid] = fmaxf(s_max[tid], s_max[tid + offset]);
+        }
         __syncthreads();
     }
 
     float max_val = s_max[0];
 
-    // 2. sum exp
+    // 3. Compute local sum of exp(x - max)
     float local_sum = 0.0f;
     for (int i = tid; i < cols; i += blockDim.x)
     {
@@ -134,22 +141,23 @@ __global__ void softmax_kernel(const float* input, float* output, int rows, int 
     s_sum[tid] = local_sum;
     __syncthreads();
 
-    // reduction sum
+    // 4. Reduce sum
     for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
     {
         if (tid < offset)
+        {
             s_sum[tid] += s_sum[tid + offset];
+        }
         __syncthreads();
     }
 
     float sum_val = s_sum[0];
 
-    // 3. normalize
+    // 5. Normalize
     for (int i = tid; i < cols; i += blockDim.x)
     {
         row_output[i] = expf(row_input[i] - max_val) / sum_val;
     }
-
 }
 
 ////////////////////////////////////////////////////////////

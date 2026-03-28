@@ -70,7 +70,7 @@ class GPUSoftMax: public Operator
             Tensor output(input.getRows(), input.getCols());
 
             // Kernel init
-            float* d_input, d_output;
+            float* d_input = nullptr, d_output = nullptr;
             size_t bytes = input.getSize() * sizeof(float);
             cudaMalloc(&d_input, bytes);
             cudaMalloc(&d_output, bytes);
@@ -89,7 +89,7 @@ class GPUSoftMax: public Operator
 
             //Return
             return output;
-            
+
         }
 
 
