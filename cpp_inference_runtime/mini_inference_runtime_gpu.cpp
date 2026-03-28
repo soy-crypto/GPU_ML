@@ -11,34 +11,36 @@
 
 class DeviceTensor
 {
-    private:
-        float* data;
-        int size;
+private:
+    float* data;
+    int rows, cols;
 
-    public:
-        DeviceTensor(int n) : size(n)
-        {
-            cudaMalloc(&data, n * sizeof(float));
-        }
+public:
+    DeviceTensor(int r, int c) : rows(r), cols(c)
+    {
+        cudaMalloc(&data, r * c * sizeof(float));
+    }
 
-        ~DeviceTensor()
-        {
-            cudaFree(data);
-        }
+    ~DeviceTensor()
+    {
+        cudaFree(data);
+    }
 
-        float* getData() { return data; }
-        int getSize() const { return size; }
+    float* getData() { return data; }
 
-        void copyFromHost(float* h)
-        {
-            cudaMemcpy(data, h, size * sizeof(float), cudaMemcpyHostToDevice);
-        }
+    int getRows() const { return rows; }
+    int getCols() const { return cols; }
+    int getSize() const { return rows * cols; }
 
-        void copyToHost(float* h)
-        {
-            cudaMemcpy(h, data, size * sizeof(float), cudaMemcpyDeviceToHost);
-        }
+    void copyFromHost(float* h)
+    {
+        cudaMemcpy(data, h, getSize() * sizeof(float), cudaMemcpyHostToDevice);
+    }
 
+    void copyToHost(float* h)
+    {
+        cudaMemcpy(h, data, getSize() * sizeof(float), cudaMemcpyDeviceToHost);
+    }
 };
 
 ////////////////////////////////////////////////////////////
@@ -47,9 +49,9 @@ class DeviceTensor
 
 class GPUOperator
 {
-    public:
-        virtual DeviceTensor forward(const DeviceTensor& input) = 0;
-        virtual ~GPUOperator() = default;
+public:
+    virtual DeviceTensor forward(const DeviceTensor& input) = 0;
+    virtual ~GPUOperator() = default;
 };
 
 ////////////////////////////////////////////////////////////
@@ -64,20 +66,27 @@ __global__ void relu_kernel(const float* input, float* output, int N)
 }
 
 ////////////////////////////////////////////////////////////
-// Softmax Kernel (1-block version)
+// YOUR Row-wise Softmax Kernel
 ////////////////////////////////////////////////////////////
 
-__global__ void softmax_kernel(const float* input, float* output, int N)
+__global__ void softmax_kernel(const float* input, float* output, int rows, int cols)
 {
-    __shared__ float smax[256];
-    __shared__ float ssum[256];
-
+    int row = blockIdx.x;
     int tid = threadIdx.x;
     int threads = blockDim.x;
 
+    if (row >= rows) return;
+
+    const float* in  = input  + row * cols;
+    float*       out = output + row * cols;
+
+    __shared__ float smax[256];
+    __shared__ float ssum[256];
+
+    // 1. max
     float local_max = -FLT_MAX;
-    for (int i = tid; i < N; i += threads)
-        local_max = fmaxf(local_max, input[i]);
+    for (int i = tid; i < cols; i += threads)
+        local_max = fmaxf(local_max, in[i]);
 
     smax[tid] = local_max;
     __syncthreads();
@@ -91,9 +100,10 @@ __global__ void softmax_kernel(const float* input, float* output, int N)
 
     float max_val = smax[0];
 
+    // 2. sum
     float local_sum = 0.0f;
-    for (int i = tid; i < N; i += threads)
-        local_sum += expf(input[i] - max_val);
+    for (int i = tid; i < cols; i += threads)
+        local_sum += expf(in[i] - max_val);
 
     ssum[tid] = local_sum;
     __syncthreads();
@@ -107,9 +117,9 @@ __global__ void softmax_kernel(const float* input, float* output, int N)
 
     float sum_val = ssum[0];
 
-    for (int i = tid; i < N; i += threads)
-        output[i] = expf(input[i] - max_val) / sum_val;
-
+    // 3. normalize
+    for (int i = tid; i < cols; i += threads)
+        out[i] = expf(in[i] - max_val) / sum_val;
 }
 
 ////////////////////////////////////////////////////////////
@@ -118,73 +128,77 @@ __global__ void softmax_kernel(const float* input, float* output, int N)
 
 class GPUReLU : public GPUOperator
 {
-    public:
-        DeviceTensor forward(const DeviceTensor& input) override
-        {
-            DeviceTensor output(input.getSize());
+public:
+    DeviceTensor forward(const DeviceTensor& input) override
+    {
+        DeviceTensor output(input.getRows(), input.getCols());
 
-            int N = input.getSize();
-            int threads = 256;
-            int blocks = (N + threads - 1) / threads;
+        int N = input.getSize();
+        int threads = 256;
+        int blocks = (N + threads - 1) / threads;
 
-            relu_kernel<<<blocks, threads>>>(
-                input.getData(),
-                output.getData(),
-                N
-            );
+        relu_kernel<<<blocks, threads>>>(
+            input.getData(),
+            output.getData(),
+            N
+        );
 
-            cudaDeviceSynchronize();
-            return output;
-        }
+        cudaDeviceSynchronize();
+        return output;
+    }
 };
 
 class GPUSoftmax : public GPUOperator
 {
-    public:
-        DeviceTensor forward(const DeviceTensor& input) override
-        {
-            DeviceTensor output(input.getSize());
+public:
+    DeviceTensor forward(const DeviceTensor& input) override
+    {
+        DeviceTensor output(input.getRows(), input.getCols());
 
-            int threads = 256;
+        int rows = input.getRows();
+        int cols = input.getCols();
 
-            softmax_kernel<<<1, threads>>>(
-                input.getData(),
-                output.getData(),
-                input.getSize()
-            );
+        int threads = 256;
+        int blocks = rows;
 
-            cudaDeviceSynchronize();
-            return output;
-        }
+        softmax_kernel<<<blocks, threads>>>(
+            input.getData(),
+            output.getData(),
+            rows,
+            cols
+        );
 
+        cudaDeviceSynchronize();
+        return output;
+    }
 };
 
 ////////////////////////////////////////////////////////////
-// Graph (Correct Design)
+// Graph
 ////////////////////////////////////////////////////////////
 
 class GPUGraph
 {
-    private:
-        std::vector<std::unique_ptr<GPUOperator>> ops;
+private:
+    std::vector<std::unique_ptr<GPUOperator>> ops;
 
-    public:
-        void add_op(std::unique_ptr<GPUOperator> op)
+public:
+    void add_op(std::unique_ptr<GPUOperator> op)
+    {
+        ops.push_back(std::move(op));
+    }
+
+    DeviceTensor run(DeviceTensor input)
+    {
+        DeviceTensor x = std::move(input);
+
+        for (auto& op : ops)
         {
-            ops.push_back(std::move(op));
+            x = op->forward(x);
         }
 
-        DeviceTensor run(DeviceTensor input)
-        {
-            DeviceTensor x = std::move(input);
-
-            for (auto& op : ops)
-            {
-                x = op->forward(x);
-            }
-
-            return x;
-        }
+        return x;
+    }
 };
 
 ////////////////////////////////////////////////////////////
@@ -193,11 +207,12 @@ class GPUGraph
 
 int main()
 {
-    int N = 6;
+    int rows = 1;
+    int cols = 6;
 
     float input[6] = {-2, -1, 0, 1, 2, 3};
 
-    DeviceTensor d_input(N);
+    DeviceTensor d_input(rows, cols);
     d_input.copyFromHost(input);
 
     GPUGraph graph;
@@ -209,7 +224,7 @@ int main()
     float output[6];
     d_out.copyToHost(output);
 
-    for (int i = 0; i < N; i++)
+    for (int i = 0; i < rows * cols; i++)
         std::cout << output[i] << " ";
 
     std::cout << std::endl;

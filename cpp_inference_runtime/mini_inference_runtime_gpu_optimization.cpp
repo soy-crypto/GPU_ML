@@ -6,24 +6,30 @@
 #include <cuda_runtime.h>
 
 ////////////////////////////////////////////////////////////
-// Device Buffer (reuse memory)
+// Device Buffer
 ////////////////////////////////////////////////////////////
 
 class DeviceBuffer
 {
-public:
+private:
     float* data;
-    int size;
+    int rows, cols;
 
-    DeviceBuffer(int n) : size(n)
+public:
+    DeviceBuffer(int r, int c) : rows(r), cols(c)
     {
-        cudaMalloc(&data, n * sizeof(float));
+        cudaMalloc(&data, rows * cols * sizeof(float));
     }
 
     ~DeviceBuffer()
     {
         cudaFree(data);
     }
+
+    float* getData() { return data; }
+    int getRows() const { return rows; }
+    int getCols() const { return cols; }
+    int getSize() const { return rows * cols; }
 };
 
 ////////////////////////////////////////////////////////////
@@ -34,79 +40,89 @@ class DeviceTensor
 {
 private:
     float* data;
-    int size;
+    int rows, cols;
 
 public:
-    DeviceTensor(float* ptr, int n) : data(ptr), size(n) {}
+    DeviceTensor(float* ptr, int r, int c) : data(ptr), rows(r), cols(c) {}
 
     float* getData() { return data; }
-    int getSize() const { return size; }
+    int getRows() const { return rows; }
+    int getCols() const { return cols; }
+    int getSize() const { return rows * cols; }
 };
 
 ////////////////////////////////////////////////////////////
-// Fused Kernel (ReLU + Softmax)
+// Fused ReLU + Row-wise Softmax Kernel
 ////////////////////////////////////////////////////////////
 
-__global__ void fused_relu_softmax_kernel(const float* input, float* output, int N)
+__global__ void fused_relu_softmax_kernel(
+    const float* input,
+    float* output,
+    int rows,
+    int cols)
 {
-    __shared__ float s_max[256];
-    __shared__ float s_sum[256];
-
+    int row = blockIdx.x;
     int tid = threadIdx.x;
     int threads = blockDim.x;
 
-    // 1. max (after ReLU)
-    float local_max = -FLT_MAX;
+    if (row >= rows) return;
 
-    for (int i = tid; i < N; i += threads)
+    const float* in  = input  + row * cols;
+    float*       out = output + row * cols;
+
+    __shared__ float smax[256];
+    __shared__ float ssum[256];
+
+    // 1. max after ReLU
+    float local_max = -FLT_MAX;
+    for (int i = tid; i < cols; i += threads)
     {
-        float val = fmaxf(input[i], 0.0f);
+        float val = fmaxf(in[i], 0.0f);
         local_max = fmaxf(local_max, val);
     }
 
-    s_max[tid] = local_max;
+    smax[tid] = local_max;
     __syncthreads();
 
     for (int offset = threads / 2; offset > 0; offset /= 2)
     {
         if (tid < offset)
-            s_max[tid] = fmaxf(s_max[tid], s_max[tid + offset]);
+            smax[tid] = fmaxf(smax[tid], smax[tid + offset]);
         __syncthreads();
     }
 
-    float max_val = s_max[0];
+    float max_val = smax[0];
 
     // 2. sum
     float local_sum = 0.0f;
-
-    for (int i = tid; i < N; i += threads)
+    for (int i = tid; i < cols; i += threads)
     {
-        float val = fmaxf(input[i], 0.0f);
+        float val = fmaxf(in[i], 0.0f);
         local_sum += expf(val - max_val);
     }
 
-    s_sum[tid] = local_sum;
+    ssum[tid] = local_sum;
     __syncthreads();
 
     for (int offset = threads / 2; offset > 0; offset /= 2)
     {
         if (tid < offset)
-            s_sum[tid] += s_sum[tid + offset];
+            ssum[tid] += ssum[tid + offset];
         __syncthreads();
     }
 
-    float sum_val = s_sum[0];
+    float sum_val = ssum[0];
 
     // 3. normalize
-    for (int i = tid; i < N; i += threads)
+    for (int i = tid; i < cols; i += threads)
     {
-        float val = fmaxf(input[i], 0.0f);
-        output[i] = expf(val - max_val) / sum_val;
+        float val = fmaxf(in[i], 0.0f);
+        out[i] = expf(val - max_val) / sum_val;
     }
 }
 
 ////////////////////////////////////////////////////////////
-// Operator (fused)
+// Fused Operator
 ////////////////////////////////////////////////////////////
 
 class FusedReluSoftmax
@@ -114,13 +130,17 @@ class FusedReluSoftmax
 public:
     void forward(const DeviceTensor& input, DeviceTensor& output)
     {
-        int N = input.getSize();
-        int threads = 256;
+        int rows = input.getRows();
+        int cols = input.getCols();
 
-        fused_relu_softmax_kernel<<<1, threads>>>(
+        int threads = 256;
+        int blocks = rows;
+
+        fused_relu_softmax_kernel<<<blocks, threads>>>(
             input.getData(),
             output.getData(),
-            N
+            rows,
+            cols
         );
 
         cudaDeviceSynchronize();
@@ -134,29 +154,31 @@ public:
 class GPUGraph
 {
 private:
-    std::unique_ptr<DeviceBuffer> buffer1;
-    std::unique_ptr<DeviceBuffer> buffer2;
-    int size;
+    std::unique_ptr<DeviceBuffer> input_buffer;
+    std::unique_ptr<DeviceBuffer> output_buffer;
 
+    int rows, cols;
     FusedReluSoftmax op;
 
 public:
-    GPUGraph(int n) : size(n)
+    GPUGraph(int r, int c) : rows(r), cols(c)
     {
-        buffer1 = std::make_unique<DeviceBuffer>(n);
-        buffer2 = std::make_unique<DeviceBuffer>(n);
+        input_buffer  = std::make_unique<DeviceBuffer>(rows, cols);
+        output_buffer = std::make_unique<DeviceBuffer>(rows, cols);
     }
 
     float* run(float* h_input)
     {
-        // H → D
-        cudaMemcpy(buffer1->data, h_input, size * sizeof(float),
-                   cudaMemcpyHostToDevice);
+        cudaMemcpy(
+            input_buffer->getData(),
+            h_input,
+            rows * cols * sizeof(float),
+            cudaMemcpyHostToDevice
+        );
 
-        DeviceTensor input(buffer1->data, size);
-        DeviceTensor output(buffer2->data, size);
+        DeviceTensor input(input_buffer->getData(), rows, cols);
+        DeviceTensor output(output_buffer->getData(), rows, cols);
 
-        // Compute
         op.forward(input, output);
 
         return output.getData();
@@ -169,21 +191,26 @@ public:
 
 int main()
 {
-    int N = 6;
+    int rows = 1;
+    int cols = 6;
 
-    std::vector<float> input = {-2, -1, 0, 1, 2, 3};
+    float input[6] = {-2, -1, 0, 1, 2, 3};
 
-    GPUGraph graph(N);
+    GPUGraph graph(rows, cols);
 
-    float* d_out = graph.run(input.data());
+    float* d_out = graph.run(input);
 
-    std::vector<float> output(N);
+    float output[6];
+    cudaMemcpy(
+        output,
+        d_out,
+        rows * cols * sizeof(float),
+        cudaMemcpyDeviceToHost
+    );
 
-    cudaMemcpy(output.data(), d_out,
-               N * sizeof(float), cudaMemcpyDeviceToHost);
-
-    for (float v : output)
-        std::cout << v << " ";
+    for (int i = 0; i < rows * cols; i++)
+        std::cout << output[i] << " ";
 
     std::cout << std::endl;
+    return 0;
 }
