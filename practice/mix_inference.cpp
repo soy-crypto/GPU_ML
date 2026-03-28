@@ -32,27 +32,23 @@ class GPUReLU: public operator
     public:
         Tensor forward(const Tensor& input) override
         {
-            // Init
+            // Host init
             Tensor output(input.getRows(), input.getCols());
-            int size = input.getSize();
-            size_t bytes = static_cast<size_t>(size) * sizeof(float);
-            
+
+            // Kernel init
             float* d_input, d_output;
+            size_t bytes = input.getSize() * sizeof(float);
             cudaMalloc(&d_input, bytes);
             cudaMalloc(&d_output, bytes);
+            cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice);
 
+        
+            // Call kernel
             int block = 256;
             int grid = (size + block - 1) / block;
-
-            // Host to Device
-            cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice);
-            
-            // Call kernel
             relu_kernel<<<grid, block>>>(d_input, d_output, size);
             cudaGetLastError();
             cudaDeviceSynchronize();
-
-            // data to host
             cudaMemcpy(output.getData(), d_output, bytes, cudaMemcpyHostToDevice);
 
             // Free space
@@ -71,25 +67,29 @@ class GPUSoftMax: public Operator
     public:
         Tensor forward(const Tensor& input) override
         {
+            // Host init
             Tensor output(input.getRows(), input.getCols());
-            int size = input.getSize();
-            size_t bytes = size * sizeof(float);
 
+            // Kernel init
             float* d_input, d_output;
+            size_t bytes = input.getSize() * sizeof(float);
             cudaMalloc(&d_input, bytes);
             cudaMalloc(&d_output, bytes);
-
-            int block = 256, grid = input.getRows();
-
-            //GPU
             cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice);
-            
 
-            
+            // Call kernel
+            int block = 256, grid = input.getRows();
+            softmax_kernel<<<grid, block>>>(d_input, d_output, rows, cols);
+            cudaGetLastError();
+            cudaDeviceSynchronize();
+            cudaMemcpy(output.getData(), d_output, bytes, cudaMemcpyDeviceToHost);
 
+            // Free Gpu
+            cudaFree(d_input);
+            cudaFree(d_output);
 
             //Return
-
+            return output;
         }
 
 
