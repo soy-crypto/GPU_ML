@@ -78,7 +78,7 @@ class GPUSoftMax: public Operator
 
             // Call kernel
             int block = 256, grid = input.getRows();
-            softmax_kernel<<<grid, block>>>(d_input, d_output, input.getRows(), input.getCols();
+            softmax_kernel<<<grid, block>>>(d_input, d_output, input.getRows(), input.getCols());
             cudaGetLastError();
             cudaDeviceSynchronize();
             cudaMemcpy(output.getData(), d_output, bytes, cudaMemcpyDeviceToHost);
