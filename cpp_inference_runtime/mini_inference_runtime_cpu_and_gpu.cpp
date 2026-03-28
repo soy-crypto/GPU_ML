@@ -93,25 +93,28 @@ class GPUReLU : public Operator
 ////////////////////////////////////////////////////////////
 // Single-block Softmax kernel
 ////////////////////////////////////////////////////////////
-
-__global__ void softmax_kernel(const float* input, float* output, int N)
+__global__ void softmax_kernel(const float* input, float* output, int rows, int cols)
 {
+    int row = blockIdx.x;        // one block per row
+    int tid = threadIdx.x;
+
+    const float* row_input  = input  + row * cols;
+    float*       row_output = output + row * cols;
+
     __shared__ float s_max[256];
     __shared__ float s_sum[256];
 
-    int tid = threadIdx.x;
-
-    // 1. local max
+    // 1. find max (per row)
     float local_max = -1e20f;
-    for (int i = tid; i < N; i += blockDim.x)
+    for (int i = tid; i < cols; i += blockDim.x)
     {
-        local_max = fmaxf(local_max, input[i]);
+        local_max = fmaxf(local_max, row_input[i]);
     }
 
     s_max[tid] = local_max;
     __syncthreads();
 
-    // reduce max
+    // reduction max
     for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
     {
         if (tid < offset)
@@ -121,17 +124,17 @@ __global__ void softmax_kernel(const float* input, float* output, int N)
 
     float max_val = s_max[0];
 
-    // 2. local sum
+    // 2. sum exp
     float local_sum = 0.0f;
-    for (int i = tid; i < N; i += blockDim.x)
+    for (int i = tid; i < cols; i += blockDim.x)
     {
-        local_sum += expf(input[i] - max_val);
+        local_sum += expf(row_input[i] - max_val);
     }
 
     s_sum[tid] = local_sum;
     __syncthreads();
 
-    // reduce sum
+    // reduction sum
     for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
     {
         if (tid < offset)
@@ -142,16 +145,16 @@ __global__ void softmax_kernel(const float* input, float* output, int N)
     float sum_val = s_sum[0];
 
     // 3. normalize
-    for (int i = tid; i < N; i += blockDim.x)
+    for (int i = tid; i < cols; i += blockDim.x)
     {
-        output[i] = expf(input[i] - max_val) / sum_val;
+        row_output[i] = expf(row_input[i] - max_val) / sum_val;
     }
+
 }
 
 ////////////////////////////////////////////////////////////
 // GPU Softmax (single-block)
 ////////////////////////////////////////////////////////////
-
 class GPUSoftmax : public Operator
 {
     public:
@@ -159,8 +162,9 @@ class GPUSoftmax : public Operator
         {
             Tensor output(input.getRows(), input.getCols());
 
-            int N = input.getSize();
-            size_t bytes = N * sizeof(float);
+            int rows = input.getRows();
+            int cols = input.getCols();
+            size_t bytes = rows * cols * sizeof(float);
 
             float *d_input, *d_output;
 
@@ -170,8 +174,9 @@ class GPUSoftmax : public Operator
             cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice);
 
             int block = 256;
+            int grid  = rows;   // 🔥 one block per row
 
-            softmax_kernel<<<1, block>>>(d_input, d_output, N);
+            softmax_kernel<<<grid, block>>>(d_input, d_output, rows, cols);
 
             cudaGetLastError();
             cudaDeviceSynchronize();
@@ -183,6 +188,7 @@ class GPUSoftmax : public Operator
 
             return output;
         }
+        
 };
 
 ////////////////////////////////////////////////////////////

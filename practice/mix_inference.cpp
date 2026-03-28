@@ -69,7 +69,28 @@ class GPUReLU: public operator
 class GPUSoftMax: public Operator
 {
     public:
-        
+        Tensor forward(const Tensor& input) override
+        {
+            Tensor output(input.getRows(), input.getCols());
+            int size = input.getSize();
+            size_t bytes = size * sizeof(float);
+
+            float* d_input, d_output;
+            cudaMalloc(&d_input, bytes);
+            cudaMalloc(&d_output, bytes);
+
+            int block = 256, grid = 1;
+
+            //GPU
+            cudaMemcpy(d_input, input.getData(), bytes, cudaMemcpyHostToDevice);
+            
+
+            
+
+
+            //Return
+
+        }
 
 
 }
