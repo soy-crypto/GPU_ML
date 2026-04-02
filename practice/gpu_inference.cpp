@@ -75,66 +75,68 @@ __global__ void softmax_kernel(const float* input, float* output, int rows, int 
     {
         out_array[i] = expf(in_array[i] - global_max) / global_sum;
     }
+
 }
 
 class DeviceTensor
 {
-private:
-    float* data;
-    int rows, cols;
+    private:
+        float* data;
+        int rows, cols;
 
-public:
-    DeviceTensor(int r, int c) : rows(r), cols(c)
-    {
-        cudaMalloc(&data, r * c * sizeof(float));
-    }
+    public:
+        DeviceTensor(int r, int c) : rows(r), cols(c)
+        {
+            cudaMalloc(&data, r * c * sizeof(float));
+        }
 
-    ~DeviceTensor()
-    {
-        cudaFree(data);
-    }
-
-    DeviceTensor(const DeviceTensor&) = delete;
-    DeviceTensor& operator=(const DeviceTensor&) = delete;
-
-    DeviceTensor(DeviceTensor&& other) noexcept
-        : data(other.data), rows(other.rows), cols(other.cols)
-    {
-        other.data = nullptr;
-        other.rows = 0;
-        other.cols = 0;
-    }
-
-    DeviceTensor& operator=(DeviceTensor&& other) noexcept
-    {
-        if (this != &other)
+        ~DeviceTensor()
         {
             cudaFree(data);
-            data = other.data;
-            rows = other.rows;
-            cols = other.cols;
+        }
 
+        DeviceTensor(const DeviceTensor&) = delete;
+        DeviceTensor& operator=(const DeviceTensor&) = delete;
+
+        DeviceTensor(DeviceTensor&& other) noexcept
+            : data(other.data), rows(other.rows), cols(other.cols)
+        {
             other.data = nullptr;
             other.rows = 0;
             other.cols = 0;
         }
-        return *this;
-    }
 
-    float* getData() const { return data; }
-    int getRows() const { return rows; }
-    int getCols() const { return cols; }
-    int getSize() const { return rows * cols; }
+        DeviceTensor& operator=(DeviceTensor&& other) noexcept
+        {
+            if (this != &other)
+            {
+                cudaFree(data);
+                data = other.data;
+                rows = other.rows;
+                cols = other.cols;
 
-    void copyToDevice(const float* hData)
-    {
-        cudaMemcpy(data, hData, getSize() * sizeof(float), cudaMemcpyHostToDevice);
-    }
+                other.data = nullptr;
+                other.rows = 0;
+                other.cols = 0;
+            }
+            return *this;
+        }
 
-    void copyToHost(float* hData) const
-    {
-        cudaMemcpy(hData, data, getSize() * sizeof(float), cudaMemcpyDeviceToHost);
-    }
+        float* getData() const { return data; }
+        int getRows() const { return rows; }
+        int getCols() const { return cols; }
+        int getSize() const { return rows * cols; }
+
+        void copyToDevice(const float* hData)
+        {
+            cudaMemcpy(data, hData, getSize() * sizeof(float), cudaMemcpyHostToDevice);
+        }
+
+        void copyToHost(float* hData) const
+        {
+            cudaMemcpy(hData, data, getSize() * sizeof(float), cudaMemcpyDeviceToHost);
+        }
+
 };
 
 class GPUOperator
@@ -146,64 +148,66 @@ public:
 
 class GPUReLU : public GPUOperator
 {
-public:
-    DeviceTensor forward(const DeviceTensor& input) override
-    {
-        DeviceTensor output(input.getRows(), input.getCols());
+    public:
+        DeviceTensor forward(const DeviceTensor& input) override
+        {
+            DeviceTensor output(input.getRows(), input.getCols());
 
-        int N = input.getSize();
-        int threads = 256;
-        int blocks = (N + threads - 1) / threads;
+            int N = input.getSize();
+            int threads = 256;
+            int blocks = (N + threads - 1) / threads;
 
-        relu_kernel<<<blocks, threads>>>(input.getData(), output.getData(), N);
-        cudaDeviceSynchronize();
+            relu_kernel<<<blocks, threads>>>(input.getData(), output.getData(), N);
+            cudaDeviceSynchronize();
 
-        return output;
-    }
+            return output;
+        }
 };
 
 class GPUSoftmax : public GPUOperator
 {
-public:
-    DeviceTensor forward(const DeviceTensor& input) override
-    {
-        DeviceTensor output(input.getRows(), input.getCols());
+    public:
+        DeviceTensor forward(const DeviceTensor& input) override
+        {
+            DeviceTensor output(input.getRows(), input.getCols());
 
-        int threads = 256;
-        int blocks = input.getRows();
+            int threads = 256;
+            int blocks = input.getRows();
 
-        softmax_kernel<<<blocks, threads>>>(
-            input.getData(),
-            output.getData(),
-            input.getRows(),
-            input.getCols()
-        );
+            softmax_kernel<<<blocks, threads>>>(
+                input.getData(),
+                output.getData(),
+                input.getRows(),
+                input.getCols()
+            );
 
-        cudaDeviceSynchronize();
-        return output;
-    }
+            cudaDeviceSynchronize();
+            return output;
+        }
+
 };
 
 class GPUGraph
 {
-private:
-    std::vector<std::unique_ptr<GPUOperator>> ops;
+    private:
+        std::vector<std::unique_ptr<GPUOperator>> ops;
 
-public:
-    void add_op(std::unique_ptr<GPUOperator> op)
-    {
-        ops.push_back(std::move(op));
-    }
-
-    DeviceTensor run(DeviceTensor input)
-    {
-        DeviceTensor x = std::move(input);
-        for (auto& op : ops)
+    public:
+        void add_op(std::unique_ptr<GPUOperator> op)
         {
-            x = op->forward(x);
+            ops.push_back(std::move(op));
         }
-        return x;
-    }
+
+        DeviceTensor run(DeviceTensor input)
+        {
+            DeviceTensor x = std::move(input);
+            for (auto& op : ops)
+            {
+                x = op->forward(x);
+            }
+            return x;
+        }
+
 };
 
 int main()
