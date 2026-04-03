@@ -5,238 +5,160 @@
 #include <cfloat>
 #include <cuda_runtime.h>
 
+// ---------------- ReLU ----------------
 __global__ void relu_kernel(const float* input, float* output, int N)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N)
-    {
         output[idx] = fmaxf(0.0f, input[idx]);
-    }
-
-    return;
 }
 
+// ---------------- Softmax ----------------
 __global__ void softmax_kernel(const float* input, float* output, int rows, int cols)
 {
     int row = blockIdx.x;
     int tid = threadIdx.x;
-    int threads = blockDim.x;
 
-    if (row >= rows)
-    {
-        return;
-    }
+    const float* in = input + row * cols;
+    float* out = output + row * cols;
 
-    const float* in_array = input + row * cols;
-    float* out_array = output + row * cols;
-
-    __shared__ float localMax[256];
-    __shared__ float localSum[256];
+    __shared__ float smax[256];
+    __shared__ float ssum[256];
 
     float local_max = -FLT_MAX;
-    for (int i = tid; i < cols; i += threads)
-    {
-        local_max = fmaxf(local_max, in_array[i]);
-    }
+    for (int i = tid; i < cols; i += blockDim.x)
+        local_max = fmaxf(local_max, in[i]);
 
-    localMax[tid] = local_max;
+    smax[tid] = local_max;
     __syncthreads();
 
-    for (int offset = threads / 2; offset > 0; offset /= 2)
+    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
     {
         if (tid < offset)
-        {
-            localMax[tid] = fmaxf(localMax[tid], localMax[tid + offset]);
-        }
+            smax[tid] = fmaxf(smax[tid], smax[tid + offset]);
         __syncthreads();
     }
 
-    float global_max = localMax[0];
+    float max_val = smax[0];
 
     float local_sum = 0.0f;
-    for (int i = tid; i < cols; i += threads)
-    {
-        local_sum += expf(in_array[i] - global_max);
-    }
+    for (int i = tid; i < cols; i += blockDim.x)
+        local_sum += expf(in[i] - max_val);
 
-    localSum[tid] = local_sum;
+    ssum[tid] = local_sum;
     __syncthreads();
 
-    for (int offset = threads / 2; offset > 0; offset /= 2)
+    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
     {
         if (tid < offset)
-        {
-            localSum[tid] += localSum[tid + offset];
-        }
+            ssum[tid] += ssum[tid + offset];
         __syncthreads();
     }
 
-    float global_sum = localSum[0];
+    float sum_val = ssum[0];
 
-    for (int i = tid; i < cols; i += threads)
-    {
-        out_array[i] = expf(in_array[i] - global_max) / global_sum;
-    }
-
-    //Return
-    return;
+    for (int i = tid; i < cols; i += blockDim.x)
+        out[i] = expf(in[i] - max_val) / sum_val;
 }
 
-class DeviceTensor
+// ---------------- Minimal Op ----------------
+class Op
 {
-    private:
-        float* data;
-        int rows, cols;
+public:
+    virtual ~Op() = default;
 
-    public:
-        DeviceTensor(int r, int c) : rows(r), cols(c)
-        {
-            cudaMalloc(&data, r * c * sizeof(float));
-        }
-
-        ~DeviceTensor()
-        {
-            cudaFree(data);
-        }
-
-        DeviceTensor(const DeviceTensor&) = delete;
-        DeviceTensor& operator=(const DeviceTensor&) = delete;
-
-        DeviceTensor(DeviceTensor&& other) noexcept
-            : data(other.data), rows(other.rows), cols(other.cols)
-        {
-            other.data = nullptr;
-            other.rows = 0;
-            other.cols = 0;
-        }
-
-        DeviceTensor& operator=(DeviceTensor&& other) noexcept
-        {
-            if (this != &other)
-            {
-                cudaFree(data);
-                data = other.data;
-                rows = other.rows;
-                cols = other.cols;
-
-                other.data = nullptr;
-                other.rows = 0;
-                other.cols = 0;
-            }
-            return *this;
-        }
-
-        float* getData() const { return data; }
-        int getRows() const { return rows; }
-        int getCols() const { return cols; }
-        int getSize() const { return rows * cols; }
-
-        void copyToDevice(const float* hData)
-        {
-            cudaMemcpy(data, hData, getSize() * sizeof(float), cudaMemcpyHostToDevice);
-        }
-
-        void copyToHost(float* hData) const
-        {
-            cudaMemcpy(hData, data, getSize() * sizeof(float), cudaMemcpyDeviceToHost);
-        }
-
+    // in-place transform: input → output
+    virtual void run(float* input, float* output, int rows, int cols) = 0;
 };
 
-class GPUOperator
+// ---------------- ReLU Op ----------------
+class ReLUOp : public Op
 {
-    public:
-        virtual ~GPUOperator() = default;
-        virtual DeviceTensor forward(const DeviceTensor& input) = 0;
+public:
+    void run(float* input, float* output, int rows, int cols) override
+    {
+        int N = rows * cols;
+        int threads = 256;
+        int blocks = (N + threads - 1) / threads;
+
+        relu_kernel<<<blocks, threads>>>(input, output, N);
+    }
 };
 
-class GPUReLU : public GPUOperator
+// ---------------- Softmax Op ----------------
+class SoftmaxOp : public Op
 {
-    public:
-        DeviceTensor forward(const DeviceTensor& input) override
-        {
-            DeviceTensor output(input.getRows(), input.getCols());
+public:
+    void run(float* input, float* output, int rows, int cols) override
+    {
+        int threads = 256;
+        int blocks = rows;
 
-            int N = input.getSize();
-            int threads = 256;
-            int blocks = (N + threads - 1) / threads;
-
-            relu_kernel<<<blocks, threads>>>(input.getData(), output.getData(), N);
-            cudaDeviceSynchronize();
-
-            return output;
-        }
-
+        softmax_kernel<<<blocks, threads>>>(input, output, rows, cols);
+    }
 };
 
-class GPUSoftmax : public GPUOperator
+// ---------------- Minimal Graph ----------------
+class Graph
 {
-    public:
-        DeviceTensor forward(const DeviceTensor& input) override
+private:
+    std::vector<std::unique_ptr<Op>> ops;
+
+public:
+    void add(std::unique_ptr<Op> op)
+    {
+        ops.push_back(std::move(op));
+    }
+
+    void run(float* d_input, float* d_output, int rows, int cols)
+    {
+        float* current = d_input;
+        float* buffer;
+
+        cudaMalloc(&buffer, rows * cols * sizeof(float));
+
+        for (size_t i = 0; i < ops.size(); i++)
         {
-            DeviceTensor output(input.getRows(), input.getCols());
+            ops[i]->run(current, buffer, rows, cols);
 
-            int threads = 256;
-            int blocks = input.getRows();
-
-            softmax_kernel<<<blocks, threads>>>(
-                input.getData(),
-                output.getData(),
-                input.getRows(),
-                input.getCols()
-            );
-
-            cudaDeviceSynchronize();
-            return output;
+            // swap input/output
+            std::swap(current, buffer);
         }
 
+        // ensure result is in d_output
+        cudaMemcpy(d_output, current, rows * cols * sizeof(float), cudaMemcpyDeviceToDevice);
+
+        cudaFree(buffer);
+    }
 };
 
-class GPUGraph
-{
-    private:
-        std::vector<std::unique_ptr<GPUOperator>> ops;
-
-    public:
-        void add_op(std::unique_ptr<GPUOperator> op)
-        {
-            ops.push_back(std::move(op));
-        }
-
-        DeviceTensor run(DeviceTensor input)
-        {
-            DeviceTensor x = std::move(input);
-            for (auto& op : ops)
-            {
-                x = op->forward(x);
-            }
-            return x;
-        }
-
-};
-
+// ---------------- Main ----------------
 int main()
 {
-    float input[6] = {-2, -1, 0, 1, 2, 3};
+    float h_input[6] = {-2, -1, 0, 1, 2, 3};
+    float h_output[6];
+
     int rows = 2, cols = 3;
 
-    DeviceTensor d_input(rows, cols);
-    d_input.copyToDevice(input);
+    float *d_input, *d_output;
+    cudaMalloc(&d_input, rows * cols * sizeof(float));
+    cudaMalloc(&d_output, rows * cols * sizeof(float));
 
-    GPUGraph graph;
-    graph.add_op(std::make_unique<GPUReLU>());
-    graph.add_op(std::make_unique<GPUSoftmax>());
+    cudaMemcpy(d_input, h_input, rows * cols * sizeof(float), cudaMemcpyHostToDevice);
 
-    DeviceTensor d_output = graph.run(std::move(d_input));
+    Graph graph;
+    graph.add(std::make_unique<ReLUOp>());
+    graph.add(std::make_unique<SoftmaxOp>());
 
-    float output[6];
-    d_output.copyToHost(output);
+    graph.run(d_input, d_output, rows, cols);
+
+    cudaMemcpy(h_output, d_output, rows * cols * sizeof(float), cudaMemcpyDeviceToHost);
 
     for (int i = 0; i < rows * cols; i++)
-    {
-        std::cout << output[i] << " ";
-    }
+        std::cout << h_output[i] << " ";
+
     std::cout << std::endl;
 
-    return 0;
+    cudaFree(d_input);
+    cudaFree(d_output);
 }
