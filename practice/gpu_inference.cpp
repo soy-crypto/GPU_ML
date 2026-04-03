@@ -11,6 +11,7 @@ __global__ void relu_kernel(const float* input, float* output, int N)
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N)
         output[idx] = fmaxf(0.0f, input[idx]);
+        
 }
 
 // ---------------- Softmax ----------------
@@ -64,72 +65,73 @@ __global__ void softmax_kernel(const float* input, float* output, int rows, int 
 // ---------------- Minimal Op ----------------
 class Op
 {
-public:
-    virtual ~Op() = default;
+    public:
+        virtual ~Op() = default;
 
-    // in-place transform: input → output
-    virtual void run(float* input, float* output, int rows, int cols) = 0;
+        // in-place transform: input → output
+        virtual void run(float* input, float* output, int rows, int cols) = 0;
 };
 
 // ---------------- ReLU Op ----------------
 class ReLUOp : public Op
 {
-public:
-    void run(float* input, float* output, int rows, int cols) override
-    {
-        int N = rows * cols;
-        int threads = 256;
-        int blocks = (N + threads - 1) / threads;
+    public:
+        void run(float* input, float* output, int rows, int cols) override
+        {
+            int N = rows * cols;
+            int threads = 256;
+            int blocks = (N + threads - 1) / threads;
 
-        relu_kernel<<<blocks, threads>>>(input, output, N);
-    }
+            relu_kernel<<<blocks, threads>>>(input, output, N);
+        }
 };
 
 // ---------------- Softmax Op ----------------
 class SoftmaxOp : public Op
 {
-public:
-    void run(float* input, float* output, int rows, int cols) override
-    {
-        int threads = 256;
-        int blocks = rows;
+    public:
+        void run(float* input, float* output, int rows, int cols) override
+        {
+            int threads = 256;
+            int blocks = rows;
 
-        softmax_kernel<<<blocks, threads>>>(input, output, rows, cols);
-    }
+            softmax_kernel<<<blocks, threads>>>(input, output, rows, cols);
+        }
+
 };
 
 // ---------------- Minimal Graph ----------------
 class Graph
 {
-private:
-    std::vector<std::unique_ptr<Op>> ops;
+    private:
+        std::vector<std::unique_ptr<Op>> ops;
 
-public:
-    void add(std::unique_ptr<Op> op)
-    {
-        ops.push_back(std::move(op));
-    }
-
-    void run(float* d_input, float* d_output, int rows, int cols)
-    {
-        float* current = d_input;
-        float* buffer;
-
-        cudaMalloc(&buffer, rows * cols * sizeof(float));
-
-        for (size_t i = 0; i < ops.size(); i++)
+    public:
+        void add(std::unique_ptr<Op> op)
         {
-            ops[i]->run(current, buffer, rows, cols);
-
-            // swap input/output
-            std::swap(current, buffer);
+            ops.push_back(std::move(op));
         }
 
-        // ensure result is in d_output
-        cudaMemcpy(d_output, current, rows * cols * sizeof(float), cudaMemcpyDeviceToDevice);
+        void run(float* d_input, float* d_output, int rows, int cols)
+        {
+            float* current = d_input;
+            float* buffer;
 
-        cudaFree(buffer);
-    }
+            cudaMalloc(&buffer, rows * cols * sizeof(float));
+
+            for (size_t i = 0; i < ops.size(); i++)
+            {
+                ops[i]->run(current, buffer, rows, cols);
+
+                // swap input/output
+                std::swap(current, buffer);
+            }
+
+            // ensure result is in d_output
+            cudaMemcpy(d_output, current, rows * cols * sizeof(float), cudaMemcpyDeviceToDevice);
+
+            cudaFree(buffer);
+        }
 };
 
 // ---------------- Main ----------------
