@@ -5,67 +5,9 @@
 #include <cfloat>
 #include <cuda_runtime.h>
 
-// ================= CUDA CHECK =================
-#define CUDA_CHECK(x) if((x)!=cudaSuccess){ \
-    printf("CUDA Error at %s:%d\n", __FILE__, __LINE__); exit(1);}
+#define CUDA_CHECK(x) if((x)!=cudaSuccess){ printf("CUDA Error\n"); exit(1); }
 
-// ================= ReLU =================
-__global__ void relu_kernel(const float* input, float* output, int N)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < N)
-        output[idx] = fmaxf(0.0f, input[idx]);
-}
-
-// ================= Softmax =================
-__global__ void softmax_kernel(const float* input, float* output, int rows, int cols)
-{
-    int row = blockIdx.x;
-    int tid = threadIdx.x;
-
-    const float* in = input + row * cols;
-    float* out = output + row * cols;
-
-    __shared__ float smax[256];
-    __shared__ float ssum[256];
-
-    float local_max = -FLT_MAX;
-    for (int i = tid; i < cols; i += blockDim.x)
-        local_max = fmaxf(local_max, in[i]);
-
-    smax[tid] = local_max;
-    __syncthreads();
-
-    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
-    {
-        if (tid < offset)
-            smax[tid] = fmaxf(smax[tid], smax[tid + offset]);
-        __syncthreads();
-    }
-
-    float max_val = smax[0];
-
-    float local_sum = 0.0f;
-    for (int i = tid; i < cols; i += blockDim.x)
-        local_sum += expf(in[i] - max_val);
-
-    ssum[tid] = local_sum;
-    __syncthreads();
-
-    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
-    {
-        if (tid < offset)
-            ssum[tid] += ssum[tid + offset];
-        __syncthreads();
-    }
-
-    float sum_val = ssum[0];
-
-    for (int i = tid; i < cols; i += blockDim.x)
-        out[i] = expf(in[i] - max_val) / sum_val;
-}
-
-// ================= MatMul =================
+// ================= MATMUL =================
 __global__ void matmul_kernel(
     const float* A, const float* B, float* C,
     int M, int N, int K)
@@ -83,136 +25,140 @@ __global__ void matmul_kernel(
     }
 }
 
-// ================= Base Op =================
-class Op {
-public:
-    virtual ~Op() = default;
-    virtual void run(float* input, float* output, int rows, int cols) = 0;
-};
+// ================= SOFTMAX =================
+__global__ void softmax_kernel(const float* input, float* output, int cols)
+{
+    int tid = threadIdx.x;
 
-// ================= ReLU Op =================
-class ReLUOp : public Op {
-public:
-    void run(float* input, float* output, int rows, int cols) override {
-        int N = rows * cols;
-        int threads = 256;
-        int blocks = (N + threads - 1) / threads;
-        relu_kernel<<<blocks, threads>>>(input, output, N);
-    }
-};
+    __shared__ float smax[256];
+    __shared__ float ssum[256];
 
-// ================= Softmax Op =================
-class SoftmaxOp : public Op {
-public:
-    void run(float* input, float* output, int rows, int cols) override {
-        softmax_kernel<<<rows, 256>>>(input, output, rows, cols);
-    }
-};
+    float local_max = -FLT_MAX;
+    for (int i = tid; i < cols; i += blockDim.x)
+        local_max = fmaxf(local_max, input[i]);
 
-// ================= Linear (MatMul) =================
-class LinearOp : public Op {
-private:
-    float* d_weight;
-    int out_dim;
+    smax[tid] = local_max;
+    __syncthreads();
 
-public:
-    LinearOp(int in_dim, int out_dim) : out_dim(out_dim) {
-        std::vector<float> h_weight(in_dim * out_dim);
-        for (auto& v : h_weight) v = ((float)rand() / RAND_MAX) - 0.5f;
-
-        CUDA_CHECK(cudaMalloc(&d_weight, in_dim * out_dim * sizeof(float)));
-        CUDA_CHECK(cudaMemcpy(d_weight, h_weight.data(),
-                              in_dim * out_dim * sizeof(float),
-                              cudaMemcpyHostToDevice));
-    }
-
-    void run(float* input, float* output, int rows, int cols) override {
-        dim3 threads(16, 16);
-        dim3 blocks((out_dim + 15)/16, (rows + 15)/16);
-
-        matmul_kernel<<<blocks, threads>>>(input, d_weight, output, rows, out_dim, cols);
-    }
-};
-
-// ================= Graph =================
-class Graph {
-private:
-    std::vector<std::unique_ptr<Op>> ops;
-    float* buffer = nullptr;
-    int max_size = 0;
-
-public:
-    void add(std::unique_ptr<Op> op) {
-        ops.push_back(std::move(op));
-    }
-
-    void run(float* d_input, float* d_output, int rows, int cols)
+    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
     {
-        int size = rows * cols;
-
-        if (size > max_size) {
-            if (buffer) cudaFree(buffer);
-            CUDA_CHECK(cudaMalloc(&buffer, size * sizeof(float)));
-            max_size = size;
-        }
-
-        float* current = d_input;
-
-        for (size_t i = 0; i < ops.size(); i++)
-        {
-            ops[i]->run(current, buffer, rows, cols);
-            std::swap(current, buffer);
-        }
-
-        CUDA_CHECK(cudaMemcpy(d_output, current,
-                              size * sizeof(float),
-                              cudaMemcpyDeviceToDevice));
+        if (tid < offset)
+            smax[tid] = fmaxf(smax[tid], smax[tid + offset]);
+        __syncthreads();
     }
 
-    ~Graph() {
-        if (buffer) cudaFree(buffer);
+    float max_val = smax[0];
+
+    float local_sum = 0.0f;
+    for (int i = tid; i < cols; i += blockDim.x)
+        local_sum += expf(input[i] - max_val);
+
+    ssum[tid] = local_sum;
+    __syncthreads();
+
+    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
+    {
+        if (tid < offset)
+            ssum[tid] += ssum[tid + offset];
+        __syncthreads();
+    }
+
+    float sum_val = ssum[0];
+
+    for (int i = tid; i < cols; i += blockDim.x)
+        output[i] = expf(input[i] - max_val) / sum_val;
+}
+
+// ================= KV CACHE =================
+class KVCache {
+public:
+    float* d_K;
+    float* d_V;
+    int max_len;
+    int dim;
+    int cur_len;
+
+    KVCache(int max_len, int dim)
+        : max_len(max_len), dim(dim), cur_len(0)
+    {
+        CUDA_CHECK(cudaMalloc(&d_K, max_len * dim * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_V, max_len * dim * sizeof(float)));
+    }
+
+    void append(float* new_k, float* new_v)
+    {
+        CUDA_CHECK(cudaMemcpy(d_K + cur_len * dim, new_k,
+                              dim * sizeof(float), cudaMemcpyDeviceToDevice));
+
+        CUDA_CHECK(cudaMemcpy(d_V + cur_len * dim, new_v,
+                              dim * sizeof(float), cudaMemcpyDeviceToDevice));
+
+        cur_len++;
     }
 };
 
 // ================= MAIN =================
 int main()
 {
-    int rows = 4;
-    int cols = 4;
+    int dim = 8;
+    int max_len = 10;
 
-    std::vector<float> h_input(rows * cols);
-    for (auto& v : h_input) v = ((float)rand() / RAND_MAX);
+    // fake weights
+    float *Wq, *Wk, *Wv;
+    CUDA_CHECK(cudaMalloc(&Wq, dim * dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&Wk, dim * dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&Wv, dim * dim * sizeof(float)));
 
-    float *d_input, *d_output;
-    CUDA_CHECK(cudaMalloc(&d_input, rows * cols * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_output, rows * cols * sizeof(float)));
+    // input token (1xdim)
+    float* d_input;
+    CUDA_CHECK(cudaMalloc(&d_input, dim * sizeof(float)));
 
-    CUDA_CHECK(cudaMemcpy(d_input, h_input.data(),
-                          rows * cols * sizeof(float),
-                          cudaMemcpyHostToDevice));
+    KVCache cache(max_len, dim);
 
-    Graph graph;
+    float *Q, *K, *V;
+    CUDA_CHECK(cudaMalloc(&Q, dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&K, dim * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&V, dim * sizeof(float)));
 
-    // ===== "LLM-style pipeline" =====
-    graph.add(std::make_unique<LinearOp>(cols, cols)); // Q
-    graph.add(std::make_unique<ReLUOp>());
-    graph.add(std::make_unique<LinearOp>(cols, cols)); // K
-    graph.add(std::make_unique<SoftmaxOp>());
-    graph.add(std::make_unique<LinearOp>(cols, cols)); // V
+    float *scores, *weights, *output;
+    CUDA_CHECK(cudaMalloc(&scores, max_len * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&weights, max_len * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&output, dim * sizeof(float)));
 
-    graph.run(d_input, d_output, rows, cols);
+    for (int step = 0; step < 5; step++)
+    {
+        std::cout << "Step " << step << std::endl;
 
-    std::vector<float> h_output(rows * cols);
-    CUDA_CHECK(cudaMemcpy(h_output.data(), d_output,
-                          rows * cols * sizeof(float),
-                          cudaMemcpyDeviceToHost));
+        // ==== Q, K, V ====
+        matmul_kernel<<<1, dim>>>(d_input, Wq, Q, 1, dim, dim);
+        matmul_kernel<<<1, dim>>>(d_input, Wk, K, 1, dim, dim);
+        matmul_kernel<<<1, dim>>>(d_input, Wv, V, 1, dim, dim);
 
-    std::cout << "Output:\n";
-    for (int i = 0; i < rows * cols; i++) {
-        std::cout << h_output[i] << " ";
+        cudaDeviceSynchronize();
+
+        // ==== append to cache ====
+        cache.append(K, V);
+
+        // ==== attention: Q × K_cache^T ====
+        matmul_kernel<<<1, max_len>>>(Q, cache.d_K, scores,
+                                     1, cache.cur_len, dim);
+
+        cudaDeviceSynchronize();
+
+        // ==== softmax ====
+        softmax_kernel<<<1, 256>>>(scores, weights, cache.cur_len);
+
+        cudaDeviceSynchronize();
+
+        // ==== weighted sum ====
+        matmul_kernel<<<1, dim>>>(weights, cache.d_V, output,
+                                 1, dim, cache.cur_len);
+
+        cudaDeviceSynchronize();
+
+        // ==== fake next token ====
+        std::cout << "Generated token: " << rand() % 100 << std::endl;
     }
-    std::cout << std::endl;
 
-    cudaFree(d_input);
-    cudaFree(d_output);
+    return 0;
 }
