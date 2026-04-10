@@ -1,0 +1,218 @@
+#include <iostream>
+#include <vector>
+#include <memory>
+#include <cmath>
+#include <cfloat>
+#include <cuda_runtime.h>
+
+// ================= CUDA CHECK =================
+#define CUDA_CHECK(x) if((x)!=cudaSuccess){ \
+    printf("CUDA Error at %s:%d\n", __FILE__, __LINE__); exit(1);}
+
+// ================= ReLU =================
+__global__ void relu_kernel(const float* input, float* output, int N)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < N)
+        output[idx] = fmaxf(0.0f, input[idx]);
+}
+
+// ================= Softmax =================
+__global__ void softmax_kernel(const float* input, float* output, int rows, int cols)
+{
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+
+    const float* in = input + row * cols;
+    float* out = output + row * cols;
+
+    __shared__ float smax[256];
+    __shared__ float ssum[256];
+
+    float local_max = -FLT_MAX;
+    for (int i = tid; i < cols; i += blockDim.x)
+        local_max = fmaxf(local_max, in[i]);
+
+    smax[tid] = local_max;
+    __syncthreads();
+
+    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
+    {
+        if (tid < offset)
+            smax[tid] = fmaxf(smax[tid], smax[tid + offset]);
+        __syncthreads();
+    }
+
+    float max_val = smax[0];
+
+    float local_sum = 0.0f;
+    for (int i = tid; i < cols; i += blockDim.x)
+        local_sum += expf(in[i] - max_val);
+
+    ssum[tid] = local_sum;
+    __syncthreads();
+
+    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
+    {
+        if (tid < offset)
+            ssum[tid] += ssum[tid + offset];
+        __syncthreads();
+    }
+
+    float sum_val = ssum[0];
+
+    for (int i = tid; i < cols; i += blockDim.x)
+        out[i] = expf(in[i] - max_val) / sum_val;
+}
+
+// ================= MatMul =================
+__global__ void matmul_kernel(
+    const float* A, const float* B, float* C,
+    int M, int N, int K)
+{
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < M && col < N)
+    {
+        float sum = 0.0f;
+        for (int i = 0; i < K; i++)
+            sum += A[row * K + i] * B[i * N + col];
+
+        C[row * N + col] = sum;
+    }
+}
+
+// ================= Base Op =================
+class Op {
+public:
+    virtual ~Op() = default;
+    virtual void run(float* input, float* output, int rows, int cols) = 0;
+};
+
+// ================= ReLU Op =================
+class ReLUOp : public Op {
+public:
+    void run(float* input, float* output, int rows, int cols) override {
+        int N = rows * cols;
+        int threads = 256;
+        int blocks = (N + threads - 1) / threads;
+        relu_kernel<<<blocks, threads>>>(input, output, N);
+    }
+};
+
+// ================= Softmax Op =================
+class SoftmaxOp : public Op {
+public:
+    void run(float* input, float* output, int rows, int cols) override {
+        softmax_kernel<<<rows, 256>>>(input, output, rows, cols);
+    }
+};
+
+// ================= Linear (MatMul) =================
+class LinearOp : public Op {
+private:
+    float* d_weight;
+    int out_dim;
+
+public:
+    LinearOp(int in_dim, int out_dim) : out_dim(out_dim) {
+        std::vector<float> h_weight(in_dim * out_dim);
+        for (auto& v : h_weight) v = ((float)rand() / RAND_MAX) - 0.5f;
+
+        CUDA_CHECK(cudaMalloc(&d_weight, in_dim * out_dim * sizeof(float)));
+        CUDA_CHECK(cudaMemcpy(d_weight, h_weight.data(),
+                              in_dim * out_dim * sizeof(float),
+                              cudaMemcpyHostToDevice));
+    }
+
+    void run(float* input, float* output, int rows, int cols) override {
+        dim3 threads(16, 16);
+        dim3 blocks((out_dim + 15)/16, (rows + 15)/16);
+
+        matmul_kernel<<<blocks, threads>>>(input, d_weight, output, rows, out_dim, cols);
+    }
+};
+
+// ================= Graph =================
+class Graph {
+private:
+    std::vector<std::unique_ptr<Op>> ops;
+    float* buffer = nullptr;
+    int max_size = 0;
+
+public:
+    void add(std::unique_ptr<Op> op) {
+        ops.push_back(std::move(op));
+    }
+
+    void run(float* d_input, float* d_output, int rows, int cols)
+    {
+        int size = rows * cols;
+
+        if (size > max_size) {
+            if (buffer) cudaFree(buffer);
+            CUDA_CHECK(cudaMalloc(&buffer, size * sizeof(float)));
+            max_size = size;
+        }
+
+        float* current = d_input;
+
+        for (size_t i = 0; i < ops.size(); i++)
+        {
+            ops[i]->run(current, buffer, rows, cols);
+            std::swap(current, buffer);
+        }
+
+        CUDA_CHECK(cudaMemcpy(d_output, current,
+                              size * sizeof(float),
+                              cudaMemcpyDeviceToDevice));
+    }
+
+    ~Graph() {
+        if (buffer) cudaFree(buffer);
+    }
+};
+
+// ================= MAIN =================
+int main()
+{
+    int rows = 4;
+    int cols = 4;
+
+    std::vector<float> h_input(rows * cols);
+    for (auto& v : h_input) v = ((float)rand() / RAND_MAX);
+
+    float *d_input, *d_output;
+    CUDA_CHECK(cudaMalloc(&d_input, rows * cols * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_output, rows * cols * sizeof(float)));
+
+    CUDA_CHECK(cudaMemcpy(d_input, h_input.data(),
+                          rows * cols * sizeof(float),
+                          cudaMemcpyHostToDevice));
+
+    Graph graph;
+
+    // ===== "LLM-style pipeline" =====
+    graph.add(std::make_unique<LinearOp>(cols, cols)); // Q
+    graph.add(std::make_unique<ReLUOp>());
+    graph.add(std::make_unique<LinearOp>(cols, cols)); // K
+    graph.add(std::make_unique<SoftmaxOp>());
+    graph.add(std::make_unique<LinearOp>(cols, cols)); // V
+
+    graph.run(d_input, d_output, rows, cols);
+
+    std::vector<float> h_output(rows * cols);
+    CUDA_CHECK(cudaMemcpy(h_output.data(), d_output,
+                          rows * cols * sizeof(float),
+                          cudaMemcpyDeviceToHost));
+
+    std::cout << "Output:\n";
+    for (int i = 0; i < rows * cols; i++) {
+        std::cout << h_output[i] << " ";
+    }
+    std::cout << std::endl;
+
+    cudaFree(d_input);
+    cudaFree(d_output);
+}
