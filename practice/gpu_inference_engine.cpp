@@ -9,7 +9,7 @@
 // ---------------- CUDA Checks ----------------
 #define CHECK_CUDA(call) \
     if ((call) != cudaSuccess) { \
-        std::cerr << "CUDA error\n"; std::exit(1); \
+        std::cerr "CUDA error\n"; std::exit(1); \
     }
 
 // ---------------- Tensor ----------------
@@ -49,12 +49,16 @@ __global__ void linear_kernel(const float* X, const float* W, const float* B, fl
     int r = blockIdx.y * blockDim.y + threadIdx.y;
     int c = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (r < rows && c < out_c) {
+    if (r < rows && c < out_c) 
+    {
         float sum = B[c];
-        for (int k = 0; k < in_c; k++) {
+        for (int k = 0; k < in_c; k++) 
+        {
             sum += X[r * in_c + k] * W[k * out_c + c];
         }
+
         Y[r * out_c + c] = sum;
+
     }
 
 }
@@ -83,9 +87,11 @@ __global__ void softmax_kernel(const float* in, float* out, int rows, int cols)
     smax[tid] = local_max;
     __syncthreads();
 
-    for (int s = blockDim.x/2; s > 0; s >>= 1) {
+    for (int s = blockDim.x/2; s > 0; s >>= 1) 
+    {
         if (tid < s)
             smax[tid] = fmaxf(smax[tid], smax[tid + s]);
+
         __syncthreads();
     }
 
@@ -98,7 +104,8 @@ __global__ void softmax_kernel(const float* in, float* out, int rows, int cols)
     ssum[tid] = sum;
     __syncthreads();
 
-    for (int s = blockDim.x/2; s > 0; s >>= 1) {
+    for (int s = blockDim.x/2; s > 0; s >>= 1) 
+    {
         if (tid < s)
             ssum[tid] += ssum[tid + s];
         __syncthreads();
@@ -138,18 +145,19 @@ public:
         CHECK_CUDA(cudaMemcpy(d_B_, B.data(), B.size()*sizeof(float), cudaMemcpyHostToDevice));
     }
 
-    Tensor infer(const Tensor& in) override {
+    Tensor infer(const Tensor& in) override 
+    {
         return {nullptr, in.rows, out_c_};
     }
 
-    void run(const Tensor& in, const Tensor& out) override {
+    void run(const Tensor& in, const Tensor& out) override 
+    {
         dim3 threads(16,16);
         dim3 blocks((out.cols+15)/16, (in.rows+15)/16);
 
-        linear_kernel<<<blocks, threads>>>(
-            in.data, d_W_, d_B_, out.data,
-            in.rows, in_c_, out_c_);
+        linear_kernel<<<blocks, threads>>>(in.data, d_W_, d_B_, out.data, in.rows, in_c_, out_c_);
     }
+
 };
 
 // ---------------- ReLUOp ----------------
@@ -158,10 +166,12 @@ class ReLUOp : public Op
 public:
     Tensor infer(const Tensor& in) override { return in; }
 
-    void run(const Tensor& in, const Tensor& out) override {
+    void run(const Tensor& in, const Tensor& out) override 
+    {
         int N = in.numel();
         relu_kernel<<<(N+255)/256, 256>>>(in.data, out.data, N);
     }
+
 };
 
 // ---------------- SoftmaxOp ----------------
@@ -170,9 +180,11 @@ class SoftmaxOp : public Op
 public:
     Tensor infer(const Tensor& in) override { return in; }
 
-    void run(const Tensor& in, const Tensor& out) override {
+    void run(const Tensor& in, const Tensor& out) override 
+    {
         softmax_kernel<<<in.rows, 256>>>(in.data, out.data, in.rows, in.cols);
     }
+
 };
 
 // ---------------- Graph ----------------
@@ -194,7 +206,8 @@ public:
 
         int max_cols = cols;
 
-        for (auto& op : ops_) {
+        for (auto& op : ops_) 
+        {
             cur = op->infer(cur);
             max_cols = std::max(max_cols, cur.cols);
         }
@@ -229,6 +242,7 @@ public:
 
         CHECK_CUDA(cudaMemcpy(output.data, cur.data, output.bytes(), cudaMemcpyDeviceToDevice));
     }
+    
 };
 
 // ---------------- Main ----------------
@@ -236,9 +250,10 @@ int main()
 {
     int rows = 2, cols = 3;
 
-    float h_input[6] = {-2,-1,0,1,2,3};
+    float h_input[6] = {-2,-1, 0, 1, 2, 3};
 
-    std::vector<float> W = {
+    std::vector<float> W = 
+    {
         0.2, -0.5, 0.1, 0.4,
         0.7, 0.3, -0.2, 0.8,
         -0.6, 0.9, 0.5, -0.1
@@ -250,7 +265,7 @@ int main()
     d_in.allocate(rows, cols);
 
     Graph g;
-    g.add(std::make_unique<LinearOp>(3,4,W,B));
+    g.add(std::make_unique<LinearOp>(3, 4, W, B));
     g.add(std::make_unique<ReLUOp>());
     g.add(std::make_unique<SoftmaxOp>());
 
@@ -266,7 +281,11 @@ int main()
     std::vector<float> h_out(out_shape.numel());
     CHECK_CUDA(cudaMemcpy(h_out.data(), d_out.view().data, out_shape.bytes(), cudaMemcpyDeviceToHost));
 
-    for (float v : h_out) std::cout << v << " ";
+    for (float v : h_out) 
+    {   
+        std::cout << v << " ";
+    }
+
     std::cout << std::endl;
-    
+
 }
