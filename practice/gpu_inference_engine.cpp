@@ -4,35 +4,55 @@
 #include <cmath>
 #include <cfloat>
 #include <cstdlib>
+#include <algorithm>
 #include <cuda_runtime.h>
 
 // ---------------- CUDA Checks ----------------
 #define CHECK_CUDA(call) \
     if ((call) != cudaSuccess) { \
-        std::cerr "CUDA error\n"; std::exit(1); \
+        std::cerr << "CUDA error\n"; std::exit(1); \
+    }
+
+#define CHECK_KERNEL() \
+    { \
+        cudaError_t err = cudaGetLastError(); \
+        if (err != cudaSuccess) { \
+            std::cerr << "Kernel launch error: " << cudaGetErrorString(err) << "\n"; \
+            std::exit(1); \
+        } \
     }
 
 // ---------------- Tensor ----------------
-struct Tensor 
+struct Tensor
 {
     float* data;
     int rows;
     int cols;
 
     int numel() const { return rows * cols; }
-    size_t bytes() const { return numel() * sizeof(float); }
+    size_t bytes() const { return static_cast<size_t>(numel()) * sizeof(float); }
 };
 
 // ---------------- DeviceTensor ----------------
-class DeviceTensor 
+class DeviceTensor
 {
     Tensor t_;
 public:
-    DeviceTensor() { t_.data = nullptr; }
-    ~DeviceTensor() { if (t_.data) cudaFree(t_.data); }
+    DeviceTensor() { 
+        t_.data = nullptr;
+        t_.rows = 0;
+        t_.cols = 0;
+    }
 
-    void allocate(int r, int c) 
+    ~DeviceTensor() { 
+        if (t_.data) cudaFree(t_.data); 
+    }
+
+    void allocate(int r, int c)
     {
+        if (t_.data)
+            CHECK_CUDA(cudaFree(t_.data));
+
         t_.rows = r;
         t_.cols = c;
         CHECK_CUDA(cudaMalloc(&t_.data, t_.bytes()));
@@ -49,18 +69,16 @@ __global__ void linear_kernel(const float* X, const float* W, const float* B, fl
     int r = blockIdx.y * blockDim.y + threadIdx.y;
     int c = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (r < rows && c < out_c) 
+    if (r < rows && c < out_c)
     {
         float sum = B[c];
-        for (int k = 0; k < in_c; k++) 
+        for (int k = 0; k < in_c; k++)
         {
             sum += X[r * in_c + k] * W[k * out_c + c];
         }
 
         Y[r * out_c + c] = sum;
-
     }
-
 }
 
 __global__ void relu_kernel(const float* in, float* out, int N)
@@ -73,6 +91,8 @@ __global__ void softmax_kernel(const float* in, float* out, int rows, int cols)
 {
     int row = blockIdx.x;
     int tid = threadIdx.x;
+
+    if (row >= rows) return;
 
     __shared__ float smax[256];
     __shared__ float ssum[256];
@@ -87,7 +107,7 @@ __global__ void softmax_kernel(const float* in, float* out, int rows, int cols)
     smax[tid] = local_max;
     __syncthreads();
 
-    for (int s = blockDim.x/2; s > 0; s >>= 1) 
+    for (int s = blockDim.x / 2; s > 0; s >>= 1)
     {
         if (tid < s)
             smax[tid] = fmaxf(smax[tid], smax[tid + s]);
@@ -104,7 +124,7 @@ __global__ void softmax_kernel(const float* in, float* out, int rows, int cols)
     ssum[tid] = sum;
     __syncthreads();
 
-    for (int s = blockDim.x/2; s > 0; s >>= 1) 
+    for (int s = blockDim.x / 2; s > 0; s >>= 1)
     {
         if (tid < s)
             ssum[tid] += ssum[tid + s];
@@ -115,98 +135,107 @@ __global__ void softmax_kernel(const float* in, float* out, int rows, int cols)
 
     for (int i = tid; i < cols; i += blockDim.x)
         y[i] = expf(x[i] - max_val) / denom;
-
 }
 
 // ---------------- Op Base ----------------
-class Op 
+class Op
 {
 public:
     virtual ~Op() = default;
     virtual Tensor infer(const Tensor& in) = 0;
     virtual void run(const Tensor& in, const Tensor& out) = 0;
-
 };
 
 // ---------------- LinearOp ----------------
-class LinearOp : public Op 
+class LinearOp : public Op
 {
     int in_c_, out_c_;
     float* d_W_;
     float* d_B_;
 
 public:
-    LinearOp(int in_c, int out_c, const std::vector<float>& W, const std::vector<float>& B): in_c_(in_c), out_c_(out_c)
+    LinearOp(int in_c, int out_c, const std::vector<float>& W, const std::vector<float>& B)
+        : in_c_(in_c), out_c_(out_c), d_W_(nullptr), d_B_(nullptr)
     {
-        CHECK_CUDA(cudaMalloc(&d_W_, W.size()*sizeof(float)));
-        CHECK_CUDA(cudaMalloc(&d_B_, B.size()*sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&d_W_, W.size() * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&d_B_, B.size() * sizeof(float)));
 
-        CHECK_CUDA(cudaMemcpy(d_W_, W.data(), W.size()*sizeof(float), cudaMemcpyHostToDevice));
-        CHECK_CUDA(cudaMemcpy(d_B_, B.data(), B.size()*sizeof(float), cudaMemcpyHostToDevice));
+        CHECK_CUDA(cudaMemcpy(d_W_, W.data(), W.size() * sizeof(float), cudaMemcpyHostToDevice));
+        CHECK_CUDA(cudaMemcpy(d_B_, B.data(), B.size() * sizeof(float), cudaMemcpyHostToDevice));
     }
 
-    Tensor infer(const Tensor& in) override 
+    ~LinearOp() override
     {
+        if (d_W_) cudaFree(d_W_);
+        if (d_B_) cudaFree(d_B_);
+    }
+
+    Tensor infer(const Tensor& in) override
+    {
+        if (in.cols != in_c_) {
+            std::cerr << "LinearOp input shape mismatch\n";
+            std::exit(1);
+        }
         return {nullptr, in.rows, out_c_};
     }
 
-    void run(const Tensor& in, const Tensor& out) override 
+    void run(const Tensor& in, const Tensor& out) override
     {
-        dim3 threads(16,16);
-        dim3 blocks((out.cols+15)/16, (in.rows+15)/16);
+        dim3 threads(16, 16);
+        dim3 blocks((out.cols + 15) / 16, (in.rows + 15) / 16);
 
         linear_kernel<<<blocks, threads>>>(in.data, d_W_, d_B_, out.data, in.rows, in_c_, out_c_);
+        CHECK_KERNEL();
     }
-
 };
 
 // ---------------- ReLUOp ----------------
-class ReLUOp : public Op 
+class ReLUOp : public Op
 {
 public:
     Tensor infer(const Tensor& in) override { return in; }
 
-    void run(const Tensor& in, const Tensor& out) override 
+    void run(const Tensor& in, const Tensor& out) override
     {
         int N = in.numel();
-        relu_kernel<<<(N+255)/256, 256>>>(in.data, out.data, N);
+        relu_kernel<<<(N + 255) / 256, 256>>>(in.data, out.data, N);
+        CHECK_KERNEL();
     }
-
 };
 
 // ---------------- SoftmaxOp ----------------
-class SoftmaxOp : public Op 
+class SoftmaxOp : public Op
 {
 public:
     Tensor infer(const Tensor& in) override { return in; }
 
-    void run(const Tensor& in, const Tensor& out) override 
+    void run(const Tensor& in, const Tensor& out) override
     {
         softmax_kernel<<<in.rows, 256>>>(in.data, out.data, in.rows, in.cols);
+        CHECK_KERNEL();
     }
-
 };
 
 // ---------------- Graph ----------------
-class Graph 
+class Graph
 {
     std::vector<std::unique_ptr<Op>> ops_;
     DeviceTensor bufA_, bufB_;
     Tensor out_shape_;
 
 public:
-    void add(std::unique_ptr<Op> op) 
+    void add(std::unique_ptr<Op> op)
     {
         ops_.push_back(std::move(op));
     }
 
-    void plan(int rows, int cols) 
+    void plan(int rows, int cols)
     {
         Tensor cur{nullptr, rows, cols};
 
         int max_cols = cols;
 
-        for (auto& op : ops_) 
+        for (auto& op : ops_)
         {
             cur = op->infer(cur);
             max_cols = std::max(max_cols, cur.cols);
@@ -216,13 +245,17 @@ public:
         bufB_.allocate(rows, max_cols);
 
         out_shape_ = cur;
-
     }
 
     Tensor output_shape() { return out_shape_; }
 
-    void run(const Tensor& input, const Tensor& output) 
+    void run(const Tensor& input, const Tensor& output)
     {
+        if (output.rows != out_shape_.rows || output.cols != out_shape_.cols) {
+            std::cerr << "Graph output shape mismatch\n";
+            std::exit(1);
+        }
+
         Tensor cur = bufA_.view();
         Tensor nxt = bufB_.view();
 
@@ -242,7 +275,6 @@ public:
 
         CHECK_CUDA(cudaMemcpy(output.data, cur.data, output.bytes(), cudaMemcpyDeviceToDevice));
     }
-    
 };
 
 // ---------------- Main ----------------
@@ -250,9 +282,9 @@ int main()
 {
     int rows = 2, cols = 3;
 
-    float h_input[6] = {-2,-1, 0, 1, 2, 3};
+    float h_input[6] = {-2, -1, 0, 1, 2, 3};
 
-    std::vector<float> W = 
+    std::vector<float> W =
     {
         0.2, -0.5, 0.1, 0.4,
         0.7, 0.3, -0.2, 0.8,
@@ -281,11 +313,7 @@ int main()
     std::vector<float> h_out(out_shape.numel());
     CHECK_CUDA(cudaMemcpy(h_out.data(), d_out.view().data, out_shape.bytes(), cudaMemcpyDeviceToHost));
 
-    for (float v : h_out) 
-    {   
+    for (float v : h_out)
         std::cout << v << " ";
-    }
-
     std::cout << std::endl;
-
 }
