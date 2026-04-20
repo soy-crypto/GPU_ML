@@ -11,8 +11,9 @@ __global__ void relu_kernel(const float* input, float* output, int N)
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N)
         output[idx] = fmaxf(0.0f, input[idx]);
-        
+
 }
+
 
 // ---------------- Softmax ----------------
 __global__ void softmax_kernel(const float* input, float* output, int rows, int cols)
@@ -59,8 +60,13 @@ __global__ void softmax_kernel(const float* input, float* output, int rows, int 
     float sum_val = ssum[0];
 
     for (int i = tid; i < cols; i += blockDim.x)
+    {
         out[i] = expf(in[i] - max_val) / sum_val;
+    }
+    
+    
 }
+
 
 // ---------------- Minimal Op ----------------
 class Op
@@ -70,7 +76,9 @@ class Op
 
         // in-place transform: input → output
         virtual void run(float* input, float* output, int rows, int cols) = 0;
+
 };
+
 
 // ---------------- ReLU Op ----------------
 class ReLUOp : public Op
@@ -84,7 +92,9 @@ class ReLUOp : public Op
 
             relu_kernel<<<blocks, threads>>>(input, output, N);
         }
+        
 };
+
 
 // ---------------- Softmax Op ----------------
 class SoftmaxOp : public Op
@@ -99,6 +109,7 @@ class SoftmaxOp : public Op
         }
 
 };
+
 
 // ---------------- Minimal Graph ----------------
 class Graph
@@ -132,7 +143,9 @@ class Graph
 
             cudaFree(buffer);
         }
+
 };
+
 
 // ---------------- Main ----------------
 int main()
@@ -163,4 +176,5 @@ int main()
 
     cudaFree(d_input);
     cudaFree(d_output);
+
 }
