@@ -10,7 +10,9 @@ __global__ void relu_kernel(const float* input, float* output, int N)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N)
+    {
         output[idx] = fmaxf(0.0f, input[idx]);
+    }
 
 }
 
