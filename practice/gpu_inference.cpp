@@ -5,115 +5,114 @@
 #include <cfloat>
 #include <cuda_runtime.h>
 
-// ---------------- ReLU ----------------
+// relu
 __global__ void relu_kernel(const float* input, float* output, int N)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < N)
+    if(idx < N)
     {
         output[idx] = fmaxf(0.0f, input[idx]);
     }
 
-}
+};
 
 
-// ---------------- Softmax ----------------
-__global__ void softmax_kernel(const float* input, float* output, int rows, int cols)
+// softmax
+__global__ void softmax_kernel(const float* input, float* output, int row, int cols)
 {
-    int row = blockIdx.x;
-    int tid = threadIdx.x;
-
+    // init
+    int row = blockIdx.x, tid = threadIdx.x;
     const float* in = input + row * cols;
-    float* out = output + row * cols;
+    float* out = ouput + row * cols;
+    __shared__ float smax[256], ssum[256];
 
-    __shared__ float smax[256];
-    __shared__ float ssum[256];
-
-    float local_max = -FLT_MAX;
-    for (int i = tid; i < cols; i += blockDim.x)
-        local_max = fmaxf(local_max, in[i]);
+    // compute
+    /** get global maximum and sum */
+    float local_max = -FLX_MAX;
+    for(int i = tid; i < cols; i += blockDim.x)
+    {
+        local_max = fmax(local_max, in[i]);
+    }
 
     smax[tid] = local_max;
     __syncthreads();
 
-    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
+    for(int offset = blockDim.x / 2; offset > 0; offset /= 2)
     {
-        if (tid < offset)
-            smax[tid] = fmaxf(smax[tid], smax[tid + offset]);
-        __syncthreads();
+        if(tid < offset)
+        {
+            smax[tid] = fmax(smax[tid], smax[tid + offset]);
+            __syncthreads();
+        }
     }
 
-    float max_val = smax[0];
+    float global_max = smax[0];
 
+    /** compute softmax */
     float local_sum = 0.0f;
-    for (int i = tid; i < cols; i += blockDim.x)
-        local_sum += expf(in[i] - max_val);
+    for(int i = tid; i < cols; i += blockDIm.x)
+    {
+        if(i < cols)
+        {
+            local_sum += expf(in[s] - global_max);
+        }
+    }
 
     ssum[tid] = local_sum;
-    __syncthreads();
+    __synsthreads();
 
-    for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
+    for(int offset = blodkDim.x / 2; offset > 0; offset /= 2)
     {
-        if (tid < offset)
+        if(tid < offset)
+        {
             ssum[tid] += ssum[tid + offset];
-        __syncthreads();
+            __synsthreads();
+        }
+
     }
 
-    float sum_val = ssum[0];
+    float global_sum = ssum[0];
 
-    for (int i = tid; i < cols; i += blockDim.x)
+    for(int i = tid; i < cols; i += blockDim.x)
     {
-        out[i] = expf(in[i] - max_val) / sum_val;
+        out[i] = expf(in[i] - global_max) / global_sum;
     }
     
-    
-}
+};
 
 
-// ---------------- Minimal Op ----------------
 class Op
 {
     public:
         virtual ~Op() = default;
-
-        // in-place transform: input → output
-        virtual void run(float* input, float* output, int rows, int cols) = 0;
-
+        virtual void run(float* input, float* output, int row, int cols) = 0;
 };
 
 
-// ---------------- ReLU Op ----------------
-class ReLUOp : public Op
+class ReLUOp: public Op
 {
     public:
         void run(float* input, float* output, int rows, int cols) override
         {
-            int N = rows * cols;
-            int threads = 256;
-            int blocks = (N + threads - 1) / threads;
-
-            relu_kernel<<<blocks, threads>>>(input, output, N);
-        }
-        
-};
-
-
-// ---------------- Softmax Op ----------------
-class SoftmaxOp : public Op
-{
-    public:
-        void run(float* input, float* output, int rows, int cols) override
-        {
-            int threads = 256;
-            int blocks = rows;
-
-            softmax_kernel<<<blocks, threads>>>(input, output, rows, cols);
+            int thread = 256, blocks = (rows * cols + thread - 1) / thread;
+            relu_kernel<<blocks, thread>>(input, output, N)  
         }
 
 };
 
 
-// ---------------- Minimal Graph ----------------
+class SoftmaxOp: public Op
+{
+    public:
+        void run(float* input, float* output, int rows, int cols) override
+        {
+            int thread = 256, blocks = rows;
+            softmax_kernel<<blocks, thread>>(input, output, rows, cols);
+        }
+
+};
+
+
 class Graph
 {
     private:
@@ -122,61 +121,58 @@ class Graph
     public:
         void add(std::unique_ptr<Op> op)
         {
-            ops.push_back(std::move(op));
+            ops.push_back(std::move(op))
         }
 
-        void run(float* d_input, float* d_output, int rows, int cols)
+        void run(float* input, float* output, int rows, int cols)
         {
-            float* current = d_input;
-            float* buffer;
-
-            cudaMalloc(&buffer, rows * cols * sizeof(float));
-
-            for (size_t i = 0; i < ops.size(); i++)
+            // compute ops
+            float *in = input, *out = null;
+            cudaMalloc(&out, rows * cols * sizeof(float));
+            for(size_t i = 0; i < ops.size(); i++)
             {
-                ops[i]->run(current, buffer, rows, cols);
-
-                // swap input/output
-                std::swap(current, buffer);
+                ops[i].run(in, out, rows, cols);
+                std::swap(in, out);
             }
 
-            // ensure result is in d_output
-            cudaMemcpy(d_output, current, rows * cols * sizeof(float), cudaMemcpyDeviceToDevice);
+            // update output
+            cudaMemcpy(output, in, rows * cols * sizeof(float), cudaMemcpyDeviceToDevice);
 
-            cudaFree(buffer);
+            // free buffer
+            cudaFree(out);
+            
         }
 
 };
 
 
-// ---------------- Main ----------------
 int main()
 {
-    float h_input[6] = {-2, -1, 0, 1, 2, 3};
-    float h_output[6];
-
+    // init
+    /* host input and output */
     int rows = 2, cols = 3;
+    float host_input[6] = {-3, -2, -1, 1, 2, 3};
+    float host_output;
+    
+    /* device input and output */
+    float *device_input, *device_output;
+    cudaMalloc(&device_input, rows * cols * sizeof(float));
+    cudaMalloc(&device_output, rows * cols * sizeof(float));
+    cudaMemcpy(device_input, host_input, rows * cols * sizeof(float), cudaMemcpyHostToDevice);
 
-    float *d_input, *d_output;
-    cudaMalloc(&d_input, rows * cols * sizeof(float));
-    cudaMalloc(&d_output, rows * cols * sizeof(float));
-
-    cudaMemcpy(d_input, h_input, rows * cols * sizeof(float), cudaMemcpyHostToDevice);
-
+    /* graph */
     Graph graph;
     graph.add(std::make_unique<ReLUOp>());
     graph.add(std::make_unique<SoftmaxOp>());
 
-    graph.run(d_input, d_output, rows, cols);
+    // run
+    graph.run(device_input, device_output, rows, cols);
+    cudaMemcpy(host_output, device_output, rows * cols * sizeof(float), cudaMemcpyDeviceToHost);
 
-    cudaMemcpy(h_output, d_output, rows * cols * sizeof(float), cudaMemcpyDeviceToHost);
+    // free buffer
+    cudaFree(device_input);
+    cudaFree(device_output);
 
-    for (int i = 0; i < rows * cols; i++)
-        std::cout << h_output[i] << " ";
-
-    std::cout << std::endl;
-
-    cudaFree(d_input);
-    cudaFree(d_output);
-
+    // Return
+    return 0;
 }
