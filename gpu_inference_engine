@@ -1,0 +1,169 @@
+#include <iostream>
+#include <vector>
+#include <queue>
+#include <chrono>
+#include <cuda_runtime.h>
+
+#define CHECK(x) if((x)!=cudaSuccess){printf("CUDA error\n"); exit(1);}
+
+// =========================
+// CUDA: memory-bound KV read
+// =========================
+__global__ void kv_read(float* kv, int n) 
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    float tmp = 0;
+
+    for (int idx = i; idx < n; idx += blockDim.x * gridDim.x) 
+    {
+        tmp += kv[idx];
+    }
+}
+
+// =========================
+// CUDA: simple compute
+// =========================
+__global__ void compute(float* data, int n) 
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) 
+    {
+        data[i] *= 1.01f;
+    }
+}
+
+// =========================
+// Request
+// =========================
+struct Request 
+{
+    int id;
+    int max_tokens;
+    int generated = 0;
+    bool prefilled = false;
+    int kv_size = 0;
+};
+
+// =========================
+// GPU KV Cache
+// =========================
+struct GPUCache 
+{
+    float* d_kv;
+    int capacity;
+
+    GPUCache(int cap) : capacity(cap) 
+    {
+        CHECK(cudaMalloc(&d_kv, capacity * sizeof(float)));
+
+        std::vector<float> init(capacity, 1.0f);
+        CHECK(cudaMemcpy(d_kv, init.data(), capacity * sizeof(float), cudaMemcpyHostToDevice));
+    }
+
+    ~GPUCache() { cudaFree(d_kv); }
+};
+
+// =========================
+// Engine
+// =========================
+struct Engine 
+{
+    std::queue<Request> waiting;
+    std::vector<Request> active;
+
+    GPUCache cache;
+    int max_batch = 3;
+    int hidden = 1024;
+
+    Engine() : cache(100 * 1024 * 1024) {} // ~400MB
+
+    void add(int id, int max_tokens) 
+    {
+        waiting.push({id, max_tokens});
+    }
+
+    void run() 
+    {
+        int step = 0;
+
+        while (!waiting.empty() || !active.empty()) 
+        {
+
+            // continuous batching
+            while (!waiting.empty() && active.size() < max_batch) 
+            {
+                active.push_back(waiting.front());
+                waiting.pop();
+            }
+
+            auto t0 = std::chrono::high_resolution_clock::now();
+            std::vector<Request> next;
+            for (auto& r : active) 
+            {
+
+                if (!r.prefilled) 
+                {
+                    // PREFILL (compute once)
+                    r.kv_size += hidden;
+                    r.prefilled = true;
+
+                } 
+                else 
+                {
+                    // DECODE (memory-bound)
+                    kv_read<<<256, 256>>>(cache.d_kv, r.kv_size);
+
+                    // small compute
+                    compute<<<256, 256>>>(cache.d_kv, r.kv_size);
+
+                    r.kv_size += hidden;
+                }
+
+                r.generated++;
+
+                if (r.generated >= r.max_tokens) 
+                {
+                    std::cout << "[DONE] id=" << r.id << " final_kv=" << r.kv_size << "\n";
+                } 
+                else 
+                {
+                    next.push_back(r);
+                }
+
+            }// for
+
+            active = next;
+
+            CHECK(cudaDeviceSynchronize());
+
+            auto t1 = std::chrono::high_resolution_clock::now();
+            double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            int total_kv = 0;
+            for (auto& r : active) 
+            {
+                total_kv += r.kv_size;
+            }
+
+            std::cout << "step=" << step++ << " batch=" << active.size() << " kv=" << total_kv << " latency(ms)=" << ms << "\n";
+
+        }//
+
+    }
+
+};
+
+// =========================
+// Main
+// =========================
+int main() 
+{
+    Engine e;
+
+    e.add(1, 12);
+    e.add(2, 8);
+    e.add(3, 10);
+    e.add(4, 6);
+    e.add(5, 9);
+
+    e.run();
+}
