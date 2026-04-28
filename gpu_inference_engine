@@ -13,7 +13,6 @@ __global__ void kv_read(float* kv, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     float tmp = 0;
-
     for (int idx = i; idx < n; idx += blockDim.x * gridDim.x) 
     {
         tmp += kv[idx];
@@ -149,8 +148,7 @@ struct Engine
 
         }//
 
-    }
-
+    }//
 };
 
 // =========================
