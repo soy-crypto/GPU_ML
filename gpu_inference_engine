@@ -4,7 +4,7 @@
 #include <chrono>
 #include <cuda_runtime.h>
 
-#define CHECK(x) if((x)!=cudaSuccess){printf("CUDA error\n"); exit(1);}
+#define CHECK(x) if((x)!=cudaSuccess) { printf("CUDA error\n"); exit(1);}
 
 // =========================
 // CUDA: memory-bound KV read
@@ -18,6 +18,7 @@ __global__ void kv_read(float* kv, int n)
     {
         tmp += kv[idx];
     }
+
 }
 
 // =========================
@@ -30,6 +31,7 @@ __global__ void compute(float* data, int n)
     {
         data[i] *= 1.01f;
     }
+
 }
 
 // =========================
@@ -55,7 +57,6 @@ struct GPUCache
     GPUCache(int cap) : capacity(cap) 
     {
         CHECK(cudaMalloc(&d_kv, capacity * sizeof(float)));
-
         std::vector<float> init(capacity, 1.0f);
         CHECK(cudaMemcpy(d_kv, init.data(), capacity * sizeof(float), cudaMemcpyHostToDevice));
     }
